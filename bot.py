@@ -105,7 +105,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.answer()
     user_id = update.effective_user.id
 
-    # Logic for Owner and Granted Users
+    # Logic for ALL users (owner and granted)
     if is_owner(user_id) or is_granted_user(user_id):
         if query.data == 'login_start':
             await query.edit_message_text(text="Please send your phone number with country code (e.g., +923001234567) to log in.")
@@ -114,6 +114,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         elif query.data == 'report_start':
             await query.edit_message_text(text="Please send the link of the channel or a post you want to report.")
             context.user_data['state'] = 'awaiting_link'
+
+        elif query.data.startswith('report_type_'):
+            report_type_text = query.data.split('_', 2)[-1]
+            context.user_data['report_type_text'] = report_type_text
+            await query.edit_message_text(f"You selected '{report_type_text}'. Now, please provide a brief message explaining the violation and then the number of times to report (e.g., 'Violent content, 5').")
+            context.user_data['state'] = 'awaiting_report_comment_and_count'
     
     # Logic only for Owner
     if is_owner(user_id):
@@ -166,12 +172,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data['state'] = 'awaiting_reset_info'
             context.user_data['user_to_reset'] = user_to_reset
             await query.edit_message_text(f"Please send the new duration for user {user_to_reset} (e.g., `1h`, `1d`).")
-
-    elif query.data.startswith('report_type_'):
-        report_type_text = query.data.split('_', 2)[-1]
-        context.user_data['report_type_text'] = report_type_text
-        await query.edit_message_text(f"You selected '{report_type_text}'. Now, please provide a brief message explaining the violation and then the number of times to report (e.g., 'Violent content, 5').")
-        context.user_data['state'] = 'awaiting_report_comment_and_count'
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
