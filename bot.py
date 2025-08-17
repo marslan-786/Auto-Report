@@ -147,7 +147,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         elif query.data == 'my_accounts':
             accounts = get_logged_in_accounts(user_id, all_access=True)
             if accounts:
-                account_list = "\n".join([f"- {acc}" for acc in accounts])
+                account_list = "\n".join([f"- {acc[0]} (User: {acc[1]})" for acc in accounts])
                 await query.edit_message_text(f"Logged in accounts:\n{account_list}")
             else:
                 await query.edit_message_text("No accounts are currently logged in.")
@@ -158,14 +158,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await query.edit_message_text("No accounts are currently logged in.")
                 return
             
-            keyboard = [[InlineKeyboardButton(text=phone, callback_data=f'show_channels_{phone}')] for phone in accounts]
+            keyboard = [[InlineKeyboardButton(text=f"{acc[0]} (User: {acc[1]})", callback_data=f'show_channels_{acc[0]}_{acc[1]}')] for acc in accounts]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text("Please select an account to view its channels:", reply_markup=reply_markup)
 
         elif query.data.startswith('show_channels_'):
-            phone_number = query.data.split('_', 2)[-1]
+            _, phone_number, account_user_id = query.data.split('_', 2)
             await query.edit_message_text(f"Fetching channels for account {phone_number}. This may take a moment...")
-            await get_user_channels(query, context, phone_number)
+            await get_user_channels(query, context, phone_number, int(account_user_id))
             
         elif query.data == 'backup_sessions':
             await query.edit_message_text("Creating a full project backup. This may take a moment...")
@@ -368,9 +368,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await update.message.reply_text(f"Starting to report '{target_link}' for you. This is task #{task_id}.")
 
             tasks = []
-            for phone in accounts_to_use:
+            for phone_number, account_user_id in accounts_to_use:
                 for i in range(report_count):
-                    task = asyncio.create_task(send_single_report(update, context, phone, target_link, report_type_text, i + 1, report_count, report_message, task_id, user_id))
+                    task = asyncio.create_task(send_single_report(update, context, phone_number, target_link, report_type_text, i + 1, report_count, report_message, task_id, user_id, account_user_id))
                     tasks.append(task)
             
             if user_id not in user_tasks:
@@ -408,38 +408,28 @@ def get_logged_in_accounts(user_id, all_access=False):
     if all_access:
         for user_folder in os.listdir(SESSION_FOLDER):
             user_path = os.path.join(SESSION_FOLDER, user_folder)
-            if os.path.isdir(user_path):
+            if os.path.isdir(user_path) and user_folder.isdigit():
                 for filename in os.listdir(user_path):
                     if filename.endswith('.session'):
-                        accounts.append(os.path.splitext(filename)[0])
+                        phone_number = os.path.splitext(filename)[0]
+                        accounts.append((phone_number, int(user_folder)))
     else:
         user_path = os.path.join(SESSION_FOLDER, str(user_id))
         if os.path.exists(user_path):
             for filename in os.listdir(user_path):
                 if filename.endswith('.session'):
-                    accounts.append(os.path.splitext(filename)[0])
+                    phone_number = os.path.splitext(filename)[0]
+                    accounts.append((phone_number, user_id))
     return accounts
 
-async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number, target_link, report_type_text, current_report_count, total_report_count, report_message, task_id, user_id):
+async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number, target_link, report_type_text, current_report_count, total_report_count, report_message, task_id, user_id, account_user_id):
     if phone_number not in session_locks:
         session_locks[phone_number] = asyncio.Lock()
     
     async with session_locks[phone_number]:
-        user_info = get_granted_user_info(user_id)
-        is_owner_or_all_access = is_owner(user_id) or (user_info and user_info.get('all_access'))
+        session_path = os.path.join(SESSION_FOLDER, str(account_user_id), phone_number)
         
-        session_path = None
-        if is_owner_or_all_access:
-            # Find the session file for this phone number, regardless of user folder
-            for folder in os.listdir(SESSION_FOLDER):
-                path = os.path.join(SESSION_FOLDER, folder, phone_number + '.session')
-                if os.path.exists(path):
-                    session_path = os.path.join(SESSION_FOLDER, folder, phone_number)
-                    break
-        else:
-            session_path = os.path.join(SESSION_FOLDER, str(user_id), phone_number)
-        
-        if not session_path:
+        if not os.path.exists(session_path + '.session'):
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session file not found. Skipping.")
             return
 
@@ -489,17 +479,17 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await asyncio.sleep(10)
 
 async def join_channels_in_background(update, context, invite_link, accounts):
-    tasks = [join_channel(update, context, phone, invite_link) for phone in accounts]
+    tasks = [join_channel(update, context, phone, user_id, invite_link) for phone, user_id in accounts]
     await asyncio.gather(*tasks)
     await update.message.reply_text("All join requests have been processed.")
     
-async def join_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number: str, invite_link: str):
+async def join_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number: str, account_user_id: int, invite_link: str):
     user_id = update.effective_user.id
     if phone_number not in session_locks:
         session_locks[phone_number] = asyncio.Lock()
 
     async with session_locks[phone_number]:
-        session_path = os.path.join(SESSION_FOLDER, str(user_id), phone_number)
+        session_path = os.path.join(SESSION_FOLDER, str(account_user_id), phone_number)
         client = TelegramClient(session_path, API_ID, API_HASH)
         await client.connect()
 
@@ -527,13 +517,13 @@ async def join_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, phone
         finally:
             await client.disconnect()
 
-async def get_user_channels(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE, phone_number: str):
+async def get_user_channels(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE, phone_number: str, account_user_id: int):
     chat_id = query.message.chat_id
     if phone_number not in session_locks:
         session_locks[phone_number] = asyncio.Lock()
 
     async with session_locks[phone_number]:
-        session_path = os.path.join(SESSION_FOLDER, str(query.from_user.id), phone_number)
+        session_path = os.path.join(SESSION_FOLDER, str(account_user_id), phone_number)
         client = TelegramClient(session_path, API_ID, API_HASH)
         await client.connect()
 
