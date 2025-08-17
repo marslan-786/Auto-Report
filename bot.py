@@ -14,6 +14,7 @@ from telethon.tl.types import (
 )
 from telethon.errors import RPCError, FloodWaitError
 import traceback
+import random
 
 # --- OWNER DETAILS & BOT CONFIGURATION ---
 # Replace with your own Telegram Chat ID and Username
@@ -369,6 +370,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
             tasks = []
             for phone_number, account_user_id in accounts_to_use:
+                # Add a delay between each account's reports
+                delay = random.uniform(1, 3)
+                await asyncio.sleep(delay)
                 for i in range(report_count):
                     task = asyncio.create_task(send_single_report(update, context, phone_number, target_link, report_type_text, i + 1, report_count, report_message, task_id, user_id, account_user_id))
                     tasks.append(task)
