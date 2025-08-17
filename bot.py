@@ -74,6 +74,17 @@ def is_granted_user(user_id):
                 return True
     return False
 
+def mask_phone_number(phone_number):
+    """
+    Masks the middle of a phone number for privacy.
+    Example: +923117822922 -> +92311***22922
+    """
+    if len(phone_number) < 8:
+        return phone_number
+    # Keep the country code and first few digits, and last few digits
+    return phone_number[:5] + '***' + phone_number[-5:]
+
+
 # --- Handlers for Telegram Bot ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -348,9 +359,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             
             await update.message.reply_text(f"Starting to report '{target_link}' for you. This is task #{task_id}.")
             
-            task = asyncio.create_task(run_reports_in_background(update, context, target_link, report_type_text, report_count, report_message, task_id))
-            user_tasks[user_id][task_id] = task
+            # اب ہم ہر اکاؤنٹ کے لیے علیحدہ ٹاسک بنائیں گے
+            logged_in_accounts = get_logged_in_accounts()
+            if not logged_in_accounts:
+                await update.message.reply_text("No accounts logged in to send reports.")
+                context.user_data['state'] = None
+                return
 
+            tasks = [asyncio.create_task(send_reports(update, context, phone, target_link, report_type_text, report_count, report_message, task_id)) for phone in logged_in_accounts]
+            
+            user_tasks[user_id][task_id] = tasks
+            
             context.user_data['state'] = None
             
         except (ValueError, IndexError):
@@ -364,8 +383,9 @@ async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         task_id = int(context.args[0])
         
         if user_id in user_tasks and task_id in user_tasks[user_id]:
-            task_to_cancel = user_tasks[user_id][task_id]
-            task_to_cancel.cancel()
+            tasks_to_cancel = user_tasks[user_id][task_id]
+            for task in tasks_to_cancel:
+                task.cancel()
             await update.message.reply_text(f"✅ The reporting loop with task #{task_id} has been requested to stop.")
             # ٹاسک کو لسٹ سے ہٹا دیں
             del user_tasks[user_id][task_id]
@@ -385,28 +405,6 @@ def get_logged_in_accounts():
             accounts.append(os.path.splitext(filename)[0])
     return accounts
 
-async def run_reports_in_background(update, context, target_link, report_type_text, count, report_message, task_id):
-    logged_in_accounts = get_logged_in_accounts()
-    if not logged_in_accounts:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"No accounts logged in to send reports for task #{task_id}.")
-        return
-
-    for phone in logged_in_accounts:
-        # Check if the task was cancelled before starting a new account's reports
-        if asyncio.current_task().cancelled():
-            return
-            
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Sending reports with account: {phone} for task #{task_id}...")
-        await send_reports(update, context, phone, target_link, report_type_text, count, report_message, task_id)
-
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"All reports for task #{task_id} have been processed. Thank you.")
-    
-    # Task list سے اس ٹاسک کو ختم کر دیں
-    user_id = update.effective_user.id
-    if user_id in user_tasks and task_id in user_tasks[user_id]:
-        del user_tasks[user_id][task_id]
-
-
 async def send_reports(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number, target_link, report_type_text, count, report_message, task_id):
     if phone_number not in session_locks:
         session_locks[phone_number] = asyncio.Lock()
@@ -417,7 +415,7 @@ async def send_reports(update: Update, context: ContextTypes.DEFAULT_TYPE, phone
         
         if not await client.is_user_authorized():
             await client.disconnect()
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Account {phone_number} is not authorized. Skipping reports for task #{task_id}.")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Account {mask_phone_number(phone_number)} is not authorized. Skipping reports for task #{task_id}.")
             return
         
         try:
@@ -435,17 +433,23 @@ async def send_reports(update: Update, context: ContextTypes.DEFAULT_TYPE, phone
                     try:
                         # اگر لوپ کو روکنے کی درخواست آئی تو یہ یہاں رک جائے گا
                         if asyncio.current_task().cancelled():
-                            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Reporting task #{task_id} was cancelled.")
+                            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Reporting task #{task_id} was cancelled for {mask_phone_number(phone_number)}.")
                             return
 
                         result = await client(ReportRequest(peer=entity, id=[message_id], option=report_option_byte, message=report_message))
-                        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Report {i+1}/{count} from {phone_number} sent successfully for task #{task_id}.")
+                        
+                        # نئے فارمیٹ کے مطابق میسج بھیجیں
+                        response_message = f"✅ Report Send {i+1}/{count} task #{task_id}.\n\n"
+                        response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
+                        response_message += f"Original api response: {str(result)}"
+                        await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
+                        
                     except asyncio.CancelledError:
                         raise # ضروری ہے کہ یہ ایرر اوپر بھیجی جائے تاکہ ٹاسک رک سکے
                     except (RPCError, FloodWaitError) as e:
-                        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {i+1}/{count} from {phone_number} failed for task #{task_id}. Reason: {e}")
+                        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {i+1}/{count} from {mask_phone_number(phone_number)} failed for task #{task_id}. Reason: {e}")
                     except Exception as e:
-                        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {i+1}/{count} from {phone_number} failed for task #{task_id}. Reason: {e}")
+                        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {i+1}/{count} from {mask_phone_number(phone_number)} failed for task #{task_id}. Reason: {e}")
                     await asyncio.sleep(10) # 10 سیکنڈ انتظار تاکہ فلڈ ایرر نہ آئے
             else:
                 entity = await client.get_entity(target_link)
@@ -453,17 +457,23 @@ async def send_reports(update: Update, context: ContextTypes.DEFAULT_TYPE, phone
                 for i in range(count):
                     try:
                         if asyncio.current_task().cancelled():
-                            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Reporting task #{task_id} was cancelled.")
+                            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Reporting task #{task_id} was cancelled for {mask_phone_number(phone_number)}.")
                             return
                         
                         result = await client(ReportSpamRequest(peer=entity))
-                        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Report {i+1}/{count} from {phone_number} sent successfully for task #{task_id}.")
+                        
+                        # نئے فارمیٹ کے مطابق میسج بھیجیں
+                        response_message = f"✅ Report Send {i+1}/{count} task #{task_id}.\n\n"
+                        response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
+                        response_message += f"Original api response: {str(result)}"
+                        await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
+                        
                     except asyncio.CancelledError:
                         raise
                     except (RPCError, FloodWaitError) as e:
-                        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {i+1}/{count} from {phone_number} failed for task #{task_id}. Reason: {e}")
+                        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {i+1}/{count} from {mask_phone_number(phone_number)} failed for task #{task_id}. Reason: {e}")
                     except Exception as e:
-                        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {i+1}/{count} from {phone_number} failed for task #{task_id}. Reason: {e}")
+                        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {i+1}/{count} from {mask_phone_number(phone_number)} failed for task #{task_id}. Reason: {e}")
                     await asyncio.sleep(10)
 
         except asyncio.CancelledError:
@@ -471,7 +481,7 @@ async def send_reports(update: Update, context: ContextTypes.DEFAULT_TYPE, phone
             await client.disconnect()
             raise
         except Exception as e:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"An error occurred with account {phone_number}: {e}")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"An error occurred with account {mask_phone_number(phone_number)} for task #{task_id}: {e}")
             await client.disconnect()
         finally:
             await client.disconnect()
@@ -493,7 +503,7 @@ async def join_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, phone
 
         if not await client.is_user_authorized():
             await client.disconnect()
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Account {phone_number} is not authorized. Skipping join request.")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Account {mask_phone_number(phone_number)} is not authorized. Skipping join request.")
             return
 
         try:
@@ -502,19 +512,19 @@ async def join_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, phone
             if match:
                 invite_hash = match.group(1)
                 await client(ImportChatInviteRequest(hash=invite_hash))
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Join request sent from account {phone_number} successfully.")
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Join request sent from account {mask_phone_number(phone_number)} successfully.")
             else:
                 # اگر یہ پبلک چینل لنک ہے
                 await client(JoinChannelRequest(channel=invite_link))
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Join request sent from account {phone_number} successfully.")
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Join request sent from account {mask_phone_number(phone_number)} successfully.")
 
         except Exception as e:
             if "ChatInviteEmptyError" in str(e):
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Join request from account {phone_number} failed. The invite link is invalid or expired.")
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Join request from account {mask_phone_number(phone_number)} failed. The invite link is invalid or expired.")
             elif "UserAlreadyParticipantError" in str(e):
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {phone_number} is already a member of this channel.")
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)} is already a member of this channel.")
             else:
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Join request from account {phone_number} failed. Reason: {e}")
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Join request from account {mask_phone_number(phone_number)} failed. Reason: {e}")
         finally:
             await client.disconnect()
 
@@ -529,7 +539,7 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
 
         if not await client.is_user_authorized():
             await client.disconnect()
-            await context.bot.send_message(chat_id=chat_id, text=f"Account {phone_number} is not authorized. Skipping channel list.")
+            await context.bot.send_message(chat_id=chat_id, text=f"Account {mask_phone_number(phone_number)} is not authorized. Skipping channel list.")
             return
 
         try:
@@ -538,14 +548,14 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
             
             if channels:
                 channel_list_text = "\n".join(channels)
-                await context.bot.send_message(chat_id=chat_id, text=f"Channels for account {phone_number}:\n\n{channel_list_text}")
+                await context.bot.send_message(chat_id=chat_id, text=f"Channels for account {mask_phone_number(phone_number)}:\n\n{channel_list_text}")
             else:
-                await context.bot.send_message(chat_id=chat_id, text=f"Account {phone_number} has not joined any channels.")
+                await context.bot.send_message(chat_id=chat_id, text=f"Account {mask_phone_number(phone_number)} has not joined any channels.")
         except Exception as e:
-            await context.bot.send_message(chat_id=chat_id, text=f"❌ Could not fetch channels for account {phone_number}. Reason: {e}")
+            await context.bot.send_message(chat_id=chat_id, text=f"❌ Could not fetch channels for account {mask_phone_number(phone_number)}. Reason: {e}")
         finally:
             await client.disconnect()
-            await context.bot.send_message(chat_id=chat_id, text=f"✅ Channel fetching for account {phone_number} completed.")
+            await context.bot.send_message(chat_id=chat_id, text=f"✅ Channel fetching for account {mask_phone_number(phone_number)} completed.")
 
 async def create_backup(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
