@@ -307,15 +307,19 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif (is_owner(user_id) or is_granted_user(user_id)) and user_state == 'awaiting_phone_number':
         phone_number = user_message
         try:
+            # Corrected logic to save session files directly in the user-specific folder
             user_session_folder = os.path.join(SESSION_FOLDER, str(user_id))
             if not os.path.exists(user_session_folder):
                 os.makedirs(user_session_folder)
             
-            client = TelegramClient(os.path.join(user_session_folder, phone_number), API_ID, API_HASH)
+            session_path = os.path.join(user_session_folder, phone_number)
+
+            client = TelegramClient(session_path, API_ID, API_HASH)
             await client.connect()
             if not await client.is_user_authorized():
                 await client.send_code_request(phone_number)
                 context.user_data['client'] = client
+                context.user_data['phone_number'] = phone_number
                 await update.message.reply_text("OTP has been sent to your number. Please enter the code.")
                 context.user_data['state'] = 'awaiting_otp'
             else:
@@ -329,7 +333,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif (is_owner(user_id) or is_granted_user(user_id)) and user_state == 'awaiting_otp':
         otp = user_message
         client = context.user_data.get('client')
-        if not client:
+        phone_number = context.user_data.get('phone_number')
+
+        if not client or not phone_number:
             await update.message.reply_text("Something went wrong. Please start the login process again.")
             context.user_data['state'] = None
             return
@@ -339,6 +345,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await update.message.reply_text("Successfully logged in! Your session file has been saved.")
             context.user_data['state'] = None
             context.user_data.pop('client', None)
+            context.user_data.pop('phone_number', None)
         except Exception as e:
             await update.message.reply_text(f"Invalid OTP. Please try again.")
             
@@ -580,10 +587,8 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
                 await context.bot.send_message(chat_id=chat_id, text=f"Channels for account {mask_phone_number(phone_number)}:\n\n{channel_list_text}")
             else:
                 await context.bot.send_message(chat_id=chat_id, text=f"Account {mask_phone_number(phone_number)} has not joined any channels.")
-        except sqlite3.OperationalError:
-            await context.bot.send_message(chat_id=chat_id, text=f"❌ Could not open the session file for {mask_phone_number(phone_number)}. This might be because another process is using it. Please try again later or re-login this account.")
         except Exception as e:
-            await context.bot.send_message(chat_id=chat_id, text=f"❌ Could not fetch channels for account {mask_phone_number(phone_number)}. Reason: {e}")
+            await context.bot.send_message(chat_id=chat_id, text=f"❌ An error occurred while fetching channels for account {mask_phone_number(phone_number)}.\n\n**Original Error:**\n`{traceback.format_exc()}`")
         finally:
             if client and client.is_connected():
                 await client.disconnect()
@@ -596,16 +601,18 @@ async def create_full_backup(query: Update.callback_query, context: ContextTypes
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
             project_dir = os.getcwd()
             for root, dirs, files in os.walk(project_dir):
-                # Exclude __pycache__ and other unnecessary folders/files
-                if '__pycache__' in root or '.git' in root or '.session-journal' in root:
-                    continue
-                
+                # Exclude .venv and other unnecessary folders
+                dirs[:] = [d for d in dirs if d not in ['.venv', '__pycache__', '.git', '.idea']]
+
                 for file in files:
-                    if file.endswith(('.py', '.json', '.txt', '.session', '.session-journal')):
-                        file_path = os.path.join(root, file)
-                        # Create a clean arcname to maintain the folder structure
-                        arcname = os.path.relpath(file_path, project_dir)
-                        zipf.write(file_path, arcname=arcname)
+                    # Exclude unnecessary files
+                    if file.endswith(('.session-journal')):
+                        continue
+                    
+                    file_path = os.path.join(root, file)
+                    # Create a clean arcname to maintain the folder structure
+                    arcname = os.path.relpath(file_path, project_dir)
+                    zipf.write(file_path, arcname=arcname)
         
         zip_buffer.seek(0)
         
