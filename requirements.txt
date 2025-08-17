@@ -1,2 +1,2 @@
-python-telegram-bot
-telethon
+python-telegram-bot==21.2
+telethon==1.36.0
