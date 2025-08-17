@@ -393,12 +393,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             
             await update.message.reply_text(f"Starting to report '{target_link}' for you. This is task #{task_id}.")
 
+            # Determine the delay based on the number of accounts
+            if len(accounts_to_use) > 1:
+                report_delay = 5  # 5 seconds delay for each report in a cycle
+            else:
+                report_delay = 10 # 10 seconds delay for single account
+
             tasks = []
-            for phone_number, account_user_id in accounts_to_use:
-                # Add a delay between each account's reports
-                delay = random.uniform(1, 3)
-                await asyncio.sleep(delay)
-                for i in range(report_count):
+            for i in range(report_count):
+                for phone_number, account_user_id in accounts_to_use:
+                    # Delay before sending each report
+                    await asyncio.sleep(report_delay)
                     task = asyncio.create_task(send_single_report(update, context, phone_number, target_link, report_type_text, i + 1, report_count, report_message, task_id, user_id, account_user_id))
                     tasks.append(task)
             
@@ -514,8 +519,7 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {current_report_count}/{total_report_count} from {mask_phone_number(phone_number)} failed for task #{task_id}. Reason: {e}")
         finally:
             await client.disconnect()
-            await asyncio.sleep(10)
-
+            
 async def join_channels_in_background(update, context, invite_link, accounts):
     tasks = [join_channel(update, context, phone, user_id, invite_link) for phone, user_id in accounts]
     await asyncio.gather(*tasks)
@@ -570,7 +574,6 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
     async with session_locks[phone_number]:
         # Corrected session folder and path creation
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
-        # Corrected: Use only phone number as the session file name
         session_path = os.path.join(session_folder, phone_number)
         
         try:
