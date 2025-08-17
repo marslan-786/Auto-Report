@@ -43,8 +43,6 @@ REPORT_OPTIONS = {
 }
 
 session_locks = {}
-# نیا گلوبل ڈکشنری جو چلنے والے ٹاسک کو اسٹور کرے گا
-# Key: user_id, Value: dict of tasks {task_id: list of tasks}
 user_tasks = {}
 task_counter = 0
 
@@ -63,17 +61,20 @@ def save_granted_users(users):
     with open(GRANTED_USERS_FILE, 'w') as f:
         json.dump(users, f, indent=4)
 
-def is_owner(user_id):
-    return user_id == OWNER_ID
-
-def is_granted_user(user_id):
+def get_granted_user_info(user_id):
     granted_users = load_granted_users()
     for user in granted_users:
         if user['user_id'] == user_id:
             expires_at = datetime.fromisoformat(user['expires_at'])
             if datetime.now() < expires_at:
-                return True
-    return False
+                return user
+    return None
+
+def is_owner(user_id):
+    return user_id == OWNER_ID
+
+def is_granted_user(user_id):
+    return get_granted_user_info(user_id) is not None
 
 def mask_phone_number(phone_number):
     """
@@ -82,14 +83,14 @@ def mask_phone_number(phone_number):
     """
     if len(phone_number) < 8:
         return phone_number
-    # Keep the country code and first few digits, and last few digits
     return phone_number[:5] + '***' + phone_number[-5:]
-
 
 # --- Handlers for Telegram Bot ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
+    text = ''
+    keyboard = []
 
     if is_owner(user_id):
         keyboard = [
@@ -144,7 +145,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data['state'] = 'awaiting_join_link'
         
         elif query.data == 'my_accounts':
-            accounts = get_logged_in_accounts()
+            accounts = get_logged_in_accounts(user_id, all_access=True)
             if accounts:
                 account_list = "\n".join([f"- {acc}" for acc in accounts])
                 await query.edit_message_text(f"Logged in accounts:\n{account_list}")
@@ -152,7 +153,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await query.edit_message_text("No accounts are currently logged in.")
 
         elif query.data == 'my_channels':
-            accounts = get_logged_in_accounts()
+            accounts = get_logged_in_accounts(user_id, all_access=True)
             if not accounts:
                 await query.edit_message_text("No accounts are currently logged in.")
                 return
@@ -167,8 +168,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await get_user_channels(query, context, phone_number)
             
         elif query.data == 'backup_sessions':
-            await query.edit_message_text("Creating backup of your sessions folder. Please wait...")
-            await create_backup(query, context)
+            await query.edit_message_text("Creating a full project backup. This may take a moment...")
+            await create_full_backup(query, context)
             await query.message.reply_text("Backup process completed.")
 
         elif query.data == 'manage_users':
@@ -176,7 +177,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await list_granted_users(query, context)
             
         elif query.data == 'grant_access':
-            await query.edit_message_text("Please send the user's Chat ID or Username and duration (e.g., `123456789 1h`, `username 1d`).")
+            await query.edit_message_text("Please send the user's Chat ID or Username, duration, and optionally 'true' for all-access (e.g., `123456789 1h true`).")
             context.user_data['state'] = 'awaiting_grant_info'
 
         elif query.data.startswith('delete_access_'):
@@ -195,28 +196,27 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_state = context.user_data.get('state')
     user_id = update.effective_user.id
     
-    # Grant Access state for Owner
     if is_owner(user_id) and user_state == 'awaiting_grant_info':
         parts = user_message.split()
-        if len(parts) != 2:
-            await update.message.reply_text("Invalid format. Please provide the ID/Username and duration (e.g., `123456789 1h`).")
+        if not (2 <= len(parts) <= 3):
+            await update.message.reply_text("Invalid format. Please provide the ID/Username, duration, and optionally 'true' (e.g., `123456789 1h true`).")
             context.user_data['state'] = None
             return
 
-        target_str, duration_str = parts
+        target_str, duration_str = parts[0], parts[1]
+        all_access = parts[2].lower() == 'true' if len(parts) == 3 else False
+        
         try:
-            # Try to get user ID from username if provided
-            try:
-                if not target_str.isdigit():
-                    chat_id = (await context.bot.get_chat(target_str)).id
-                else:
-                    chat_id = int(target_str)
-            except Exception:
-                await update.message.reply_text("Could not find a user with that ID or Username. Please try again.")
-                context.user_data['state'] = None
-                return
+            if not target_str.isdigit():
+                chat_id = (await context.bot.get_chat(target_str)).id
+            else:
+                chat_id = int(target_str)
+        except Exception:
+            await update.message.reply_text("Could not find a user with that ID or Username. Please try again.")
+            context.user_data['state'] = None
+            return
 
-            # Parse duration
+        try:
             unit = duration_str[-1].lower()
             value = int(duration_str[:-1])
             
@@ -236,14 +236,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             for user in granted_users:
                 if user['user_id'] == chat_id:
                     user['expires_at'] = expires_at
+                    user['all_access'] = all_access
                     user_found = True
                     break
             
             if not user_found:
-                granted_users.append({'user_id': chat_id, 'expires_at': expires_at})
+                granted_users.append({'user_id': chat_id, 'expires_at': expires_at, 'all_access': all_access})
             
             save_granted_users(granted_users)
-            await update.message.reply_text(f"✅ Access granted to user ID {chat_id} until {datetime.fromisoformat(expires_at).strftime('%Y-%m-%d %H:%M')}.")
+            access_type = "full access" if all_access else "limited access"
+            await update.message.reply_text(f"✅ Access granted to user ID {chat_id} with {access_type} until {datetime.fromisoformat(expires_at).strftime('%Y-%m-%d %H:%M')}.")
             context.user_data['state'] = None
 
         except (ValueError, IndexError):
@@ -290,7 +292,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif (is_owner(user_id) or is_granted_user(user_id)) and user_state == 'awaiting_phone_number':
         phone_number = user_message
         try:
-            client = TelegramClient(os.path.join(SESSION_FOLDER, phone_number), API_ID, API_HASH)
+            user_session_folder = os.path.join(SESSION_FOLDER, str(user_id))
+            if not os.path.exists(user_session_folder):
+                os.makedirs(user_session_folder)
+            
+            client = TelegramClient(os.path.join(user_session_folder, phone_number), API_ID, API_HASH)
             await client.connect()
             if not await client.is_user_authorized():
                 await client.send_code_request(phone_number)
@@ -323,7 +329,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             
     elif (is_owner(user_id) or is_granted_user(user_id)) and user_state == 'awaiting_link':
         context.user_data['target_link'] = user_message
-        # Provide the buttons for report types immediately
         keyboard_buttons = [[InlineKeyboardButton(text=key, callback_data=f'report_type_{key}')] for key in REPORT_OPTIONS.keys()]
         reply_markup = InlineKeyboardMarkup(keyboard_buttons)
         await update.message.reply_text("Please choose a report type:", reply_markup=reply_markup)
@@ -331,7 +336,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     elif is_owner(user_id) and user_state == 'awaiting_join_link':
         invite_link = user_message
-        accounts = get_logged_in_accounts()
+        accounts = get_logged_in_accounts(user_id, all_access=True)
         if not accounts:
             await update.message.reply_text("No accounts logged in to join channels.")
             return
@@ -349,23 +354,23 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             target_link = context.user_data.get('target_link')
             report_type_text = context.user_data.get('report_type_text')
 
-            logged_in_accounts = get_logged_in_accounts()
-            if not logged_in_accounts:
+            user_info = get_granted_user_info(user_id)
+            accounts_to_use = get_logged_in_accounts(user_id, user_info['all_access'] if user_info else False)
+            
+            if not accounts_to_use:
                 await update.message.reply_text("No accounts logged in to send reports.")
                 context.user_data['state'] = None
                 return
 
-            # ہر بار ایک نیا یونیک ٹاسک نمبر دیں
             task_counter += 1
             task_id = task_counter
             
             await update.message.reply_text(f"Starting to report '{target_link}' for you. This is task #{task_id}.")
 
             tasks = []
-            for phone in logged_in_accounts:
+            for phone in accounts_to_use:
                 for i in range(report_count):
-                    # ہر ایک رپورٹ کے لیے ایک نیا ٹاسک بنائیں
-                    task = asyncio.create_task(send_single_report(update, context, phone, target_link, report_type_text, i + 1, report_count, report_message, task_id))
+                    task = asyncio.create_task(send_single_report(update, context, phone, target_link, report_type_text, i + 1, report_count, report_message, task_id, user_id))
                     tasks.append(task)
             
             if user_id not in user_tasks:
@@ -398,19 +403,47 @@ async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # --- Helper Functions ---
 
-def get_logged_in_accounts():
+def get_logged_in_accounts(user_id, all_access=False):
     accounts = []
-    for filename in os.listdir(SESSION_FOLDER):
-        if filename.endswith('.session'):
-            accounts.append(os.path.splitext(filename)[0])
+    if all_access:
+        for user_folder in os.listdir(SESSION_FOLDER):
+            user_path = os.path.join(SESSION_FOLDER, user_folder)
+            if os.path.isdir(user_path):
+                for filename in os.listdir(user_path):
+                    if filename.endswith('.session'):
+                        accounts.append(os.path.splitext(filename)[0])
+    else:
+        user_path = os.path.join(SESSION_FOLDER, str(user_id))
+        if os.path.exists(user_path):
+            for filename in os.listdir(user_path):
+                if filename.endswith('.session'):
+                    accounts.append(os.path.splitext(filename)[0])
     return accounts
 
-async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number, target_link, report_type_text, current_report_count, total_report_count, report_message, task_id):
+async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number, target_link, report_type_text, current_report_count, total_report_count, report_message, task_id, user_id):
     if phone_number not in session_locks:
         session_locks[phone_number] = asyncio.Lock()
     
     async with session_locks[phone_number]:
-        client = TelegramClient(os.path.join(SESSION_FOLDER, phone_number), API_ID, API_HASH)
+        user_info = get_granted_user_info(user_id)
+        is_owner_or_all_access = is_owner(user_id) or (user_info and user_info.get('all_access'))
+        
+        session_path = None
+        if is_owner_or_all_access:
+            # Find the session file for this phone number, regardless of user folder
+            for folder in os.listdir(SESSION_FOLDER):
+                path = os.path.join(SESSION_FOLDER, folder, phone_number + '.session')
+                if os.path.exists(path):
+                    session_path = os.path.join(SESSION_FOLDER, folder, phone_number)
+                    break
+        else:
+            session_path = os.path.join(SESSION_FOLDER, str(user_id), phone_number)
+        
+        if not session_path:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session file not found. Skipping.")
+            return
+
+        client = TelegramClient(session_path, API_ID, API_HASH)
         await client.connect()
         
         if not await client.is_user_authorized():
@@ -453,7 +486,6 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {current_report_count}/{total_report_count} from {mask_phone_number(phone_number)} failed for task #{task_id}. Reason: {e}")
         finally:
             await client.disconnect()
-            # 10 سیکنڈ انتظار تاکہ فلڈ ایرر نہ آئے
             await asyncio.sleep(10)
 
 async def join_channels_in_background(update, context, invite_link, accounts):
@@ -462,11 +494,13 @@ async def join_channels_in_background(update, context, invite_link, accounts):
     await update.message.reply_text("All join requests have been processed.")
     
 async def join_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number: str, invite_link: str):
+    user_id = update.effective_user.id
     if phone_number not in session_locks:
         session_locks[phone_number] = asyncio.Lock()
 
     async with session_locks[phone_number]:
-        client = TelegramClient(os.path.join(SESSION_FOLDER, phone_number), API_ID, API_HASH)
+        session_path = os.path.join(SESSION_FOLDER, str(user_id), phone_number)
+        client = TelegramClient(session_path, API_ID, API_HASH)
         await client.connect()
 
         if not await client.is_user_authorized():
@@ -499,7 +533,8 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
         session_locks[phone_number] = asyncio.Lock()
 
     async with session_locks[phone_number]:
-        client = TelegramClient(os.path.join(SESSION_FOLDER, phone_number), API_ID, API_HASH)
+        session_path = os.path.join(SESSION_FOLDER, str(query.from_user.id), phone_number)
+        client = TelegramClient(session_path, API_ID, API_HASH)
         await client.connect()
 
         if not await client.is_user_authorized():
@@ -522,23 +557,23 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
             await client.disconnect()
             await context.bot.send_message(chat_id=chat_id, text=f"✅ Channel fetching for account {mask_phone_number(phone_number)} completed.")
 
-async def create_backup(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE):
+async def create_full_backup(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
     try:
-        if not os.path.exists(SESSION_FOLDER) or not os.listdir(SESSION_FOLDER):
-            await context.bot.send_message(chat_id=chat_id, text="There are no sessions to back up.")
-            return
-
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            for filename in os.listdir(SESSION_FOLDER):
-                file_path = os.path.join(SESSION_FOLDER, filename)
-                if os.path.isfile(file_path):
-                    zipf.write(file_path, arcname=filename)
+            project_dir = os.getcwd()
+            for root, dirs, files in os.walk(project_dir):
+                for file in files:
+                    if file.endswith(('.py', '.json', '.txt', '.session', '.session-journal')):
+                        file_path = os.path.join(root, file)
+                        # Create a clean arcname to avoid including the full path
+                        arcname = os.path.relpath(file_path, project_dir)
+                        zipf.write(file_path, arcname=arcname)
         
         zip_buffer.seek(0)
         
-        backup_filename = f"sessions_backup_{datetime.now().strftime('%Y-%m-%d')}.zip"
+        backup_filename = f"full_project_backup_{datetime.now().strftime('%Y-%m-%d')}.zip"
         await context.bot.send_document(chat_id=chat_id, document=zip_buffer, filename=backup_filename)
         
     except Exception as e:
@@ -556,9 +591,10 @@ async def list_granted_users(query: Update.callback_query, context: ContextTypes
     for user in granted_users:
         user_id = user['user_id']
         expires_at = datetime.fromisoformat(user['expires_at']).strftime('%Y-%m-%d %H:%M')
+        access_type = "All Access" if user.get('all_access') else "Limited"
         
         row = [
-            InlineKeyboardButton(text=f"User: {user_id} (Expires: {expires_at})", callback_data='_'),
+            InlineKeyboardButton(text=f"User: {user_id} ({access_type}, Expires: {expires_at})", callback_data='_'),
             InlineKeyboardButton(text="B", callback_data=f'delete_access_{user_id}'),
             InlineKeyboardButton(text="R", callback_data=f'reset_access_{user_id}')
         ]
