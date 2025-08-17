@@ -307,14 +307,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif (is_owner(user_id) or is_granted_user(user_id)) and user_state == 'awaiting_phone_number':
         phone_number = user_message
         try:
-            # Corrected logic to save session files directly in the user-specific folder
             user_session_folder = os.path.join(SESSION_FOLDER, str(user_id))
             if not os.path.exists(user_session_folder):
                 os.makedirs(user_session_folder)
             
             session_path = os.path.join(user_session_folder, phone_number)
             
-            # Check if session file already exists
             if os.path.exists(session_path + '.session'):
                 await update.message.reply_text("This account is already logged in. If you are having issues, please delete the old session file and try again.")
                 context.user_data['state'] = None
@@ -436,6 +434,7 @@ async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
 def get_logged_in_accounts(user_id, all_access=False):
     accounts = []
+    # If the user has all-access, check all folders in the sessions directory.
     if all_access:
         for user_folder in os.listdir(SESSION_FOLDER):
             user_path = os.path.join(SESSION_FOLDER, user_folder)
@@ -444,6 +443,7 @@ def get_logged_in_accounts(user_id, all_access=False):
                     if filename.endswith('.session'):
                         phone_number = os.path.splitext(filename)[0]
                         accounts.append((phone_number, int(user_folder)))
+    # If the user has limited access, only check their specific folder.
     else:
         user_path = os.path.join(SESSION_FOLDER, str(user_id))
         if os.path.exists(user_path):
@@ -458,6 +458,7 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
         session_locks[phone_number] = asyncio.Lock()
     
     async with session_locks[phone_number]:
+        # Corrected session path to use user_id folder
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
         session_path = os.path.join(session_folder, phone_number)
         
@@ -567,21 +568,16 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
         session_locks[phone_number] = asyncio.Lock()
 
     async with session_locks[phone_number]:
+        # Corrected session folder and path creation
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
         session_path = os.path.join(session_folder, phone_number)
         
-        # Check if session folder exists. If not, this is a clear sign of the problem.
-        if not os.path.exists(session_folder):
-            await context.bot.send_message(chat_id=chat_id, text=f"❌ The session folder for account {mask_phone_number(phone_number)} was not found at `{session_folder}`. This indicates that the account was either not logged in correctly or the session file was moved/deleted. Please re-login to fix this.")
-            return
-            
-        # Check if the session file exists inside the correct folder.
-        if not os.path.exists(session_path + '.session'):
-            await context.bot.send_message(chat_id=chat_id, text=f"❌ The session file for account {mask_phone_number(phone_number)} was not found at `{session_path}.session`. This could mean the file was not created correctly. Please re-login this account to fix this.")
-            return
-
-        client = None
         try:
+            # New and improved checks
+            if not os.path.exists(session_path + '.session'):
+                await context.bot.send_message(chat_id=chat_id, text=f"❌ The session file for account {mask_phone_number(phone_number)} was not found at `{session_path}.session`. Please re-login this account to fix this.")
+                return
+
             client = TelegramClient(session_path, API_ID, API_HASH)
             await client.connect()
 
@@ -615,16 +611,13 @@ async def create_full_backup(query: Update.callback_query, context: ContextTypes
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
             project_dir = os.getcwd()
             for root, dirs, files in os.walk(project_dir):
-                # Exclude .venv and other unnecessary folders
                 dirs[:] = [d for d in dirs if d not in ['.venv', '__pycache__', '.git', '.idea']]
 
                 for file in files:
-                    # Exclude unnecessary files
                     if file.endswith(('.session-journal')):
                         continue
                     
                     file_path = os.path.join(root, file)
-                    # Create a clean arcname to maintain the folder structure
                     arcname = os.path.relpath(file_path, project_dir)
                     zipf.write(file_path, arcname=arcname)
         
