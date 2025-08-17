@@ -431,8 +431,14 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
         session_locks[phone_number] = asyncio.Lock()
     
     async with session_locks[phone_number]:
-        session_path = os.path.join(SESSION_FOLDER, str(account_user_id), phone_number)
+        session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
+        session_path = os.path.join(session_folder, phone_number)
         
+        # Ensure the session folder exists before trying to open the file
+        if not os.path.exists(session_folder):
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session folder not found. Skipping.")
+            return
+
         if not os.path.exists(session_path + '.session'):
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session file not found. Skipping.")
             return
@@ -493,7 +499,14 @@ async def join_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, phone
         session_locks[phone_number] = asyncio.Lock()
 
     async with session_locks[phone_number]:
-        session_path = os.path.join(SESSION_FOLDER, str(account_user_id), phone_number)
+        session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
+        session_path = os.path.join(session_folder, phone_number)
+
+        # Ensure the session folder exists before trying to open the file
+        if not os.path.exists(session_folder):
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session folder not found. Skipping join request.")
+            return
+
         client = TelegramClient(session_path, API_ID, API_HASH)
         await client.connect()
 
@@ -527,7 +540,14 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
         session_locks[phone_number] = asyncio.Lock()
 
     async with session_locks[phone_number]:
-        session_path = os.path.join(SESSION_FOLDER, str(account_user_id), phone_number)
+        session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
+        session_path = os.path.join(session_folder, phone_number)
+        
+        # Ensure the session folder exists before trying to open the file
+        if not os.path.exists(session_folder):
+            await context.bot.send_message(chat_id=chat_id, text=f"❌ Account {mask_phone_number(phone_number)}'s session folder not found. Please re-login this account to fix this.")
+            return
+
         client = TelegramClient(session_path, API_ID, API_HASH)
         await client.connect()
 
