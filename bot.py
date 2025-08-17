@@ -165,9 +165,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.edit_message_text("Please select an account to view its channels:", reply_markup=reply_markup)
 
         elif query.data.startswith('show_channels_'):
-            _, phone_number, account_user_id = query.data.split('_', 2)
+            try:
+                # Corrected logic to handle the callback data more robustly
+                parts = query.data.split('_', 2)
+                if len(parts) != 3:
+                    await query.edit_message_text("❌ There was an error processing the request. Please try again.")
+                    return
+                    
+                _, phone_number, account_user_id_str = parts
+                account_user_id = int(account_user_id_str)
+                
+            except (ValueError, IndexError):
+                await query.edit_message_text("❌ Could not parse account details. Please try again or contact support.")
+                return
+                
             await query.edit_message_text(f"Fetching channels for account {phone_number}. This may take a moment...")
-            await get_user_channels(query, context, phone_number, int(account_user_id))
+            await get_user_channels(query, context, phone_number, account_user_id)
             
         elif query.data == 'backup_sessions':
             await query.edit_message_text("Creating a full project backup. This may take a moment...")
@@ -404,7 +417,7 @@ async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     except (IndexError, ValueError):
         await update.message.reply_text("❌ Please specify the task number you want to stop. Example: `/stop 1`")
     except Exception as e:
-        await update.message.reply_text(f"An error occurred while stopping the task: {e}")
+            await update.message.reply_text(f"An error occurred while stopping the task: {e}")
 
 # --- Helper Functions ---
 
