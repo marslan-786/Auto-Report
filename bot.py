@@ -563,20 +563,19 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
     async with session_locks[phone_number]:
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
         session_path = os.path.join(session_folder, phone_number)
-        
-        # Ensure the session folder exists before trying to open the file
-        if not os.path.exists(session_folder):
-            await context.bot.send_message(chat_id=chat_id, text=f"❌ Account {mask_phone_number(phone_number)}'s session folder not found. Please re-login this account to fix this.")
-            return
 
-        client = None
         try:
+            # New check to see if the session file exists before trying to open it
+            if not os.path.exists(session_path + '.session'):
+                await context.bot.send_message(chat_id=chat_id, text=f"❌ Session file for account {mask_phone_number(phone_number)} not found. Please re-login this account.")
+                return
+
             client = TelegramClient(session_path, API_ID, API_HASH)
             await client.connect()
 
             if not await client.is_user_authorized():
                 await client.disconnect()
-                await context.bot.send_message(chat_id=chat_id, text=f"Account {mask_phone_number(phone_number)} is not authorized. Skipping channel list.")
+                await context.bot.send_message(chat_id=chat_id, text=f"❌ Account {mask_phone_number(phone_number)} is not authorized. Please re-login.")
                 return
 
             dialogs = await client.get_dialogs()
@@ -587,12 +586,15 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
                 await context.bot.send_message(chat_id=chat_id, text=f"Channels for account {mask_phone_number(phone_number)}:\n\n{channel_list_text}")
             else:
                 await context.bot.send_message(chat_id=chat_id, text=f"Account {mask_phone_number(phone_number)} has not joined any channels.")
+
         except Exception as e:
-            await context.bot.send_message(chat_id=chat_id, text=f"❌ An error occurred while fetching channels for account {mask_phone_number(phone_number)}.\n\n**Original Error:**\n`{traceback.format_exc()}`")
+            error_details = f"❌ An error occurred while fetching channels for account {mask_phone_number(phone_number)}.\n\n**Original Error:**\n```\n{traceback.format_exc()}\n```"
+            await context.bot.send_message(chat_id=chat_id, text=error_details)
         finally:
-            if client and client.is_connected():
+            if 'client' in locals() and client and client.is_connected():
                 await client.disconnect()
             await context.bot.send_message(chat_id=chat_id, text=f"✅ Channel fetching for account {mask_phone_number(phone_number)} completed.")
+
 
 async def create_full_backup(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
