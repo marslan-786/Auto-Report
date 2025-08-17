@@ -564,10 +564,14 @@ async def create_full_backup(query: Update.callback_query, context: ContextTypes
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
             project_dir = os.getcwd()
             for root, dirs, files in os.walk(project_dir):
+                # Exclude __pycache__ and other unnecessary folders/files
+                if '__pycache__' in root or '.git' in root or '.session-journal' in root:
+                    continue
+                
                 for file in files:
                     if file.endswith(('.py', '.json', '.txt', '.session', '.session-journal')):
                         file_path = os.path.join(root, file)
-                        # Create a clean arcname to avoid including the full path
+                        # Create a clean arcname to maintain the folder structure
                         arcname = os.path.relpath(file_path, project_dir)
                         zipf.write(file_path, arcname=arcname)
         
