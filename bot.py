@@ -167,7 +167,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         elif query.data.startswith('show_channels_'):
             try:
                 # Corrected logic to handle the callback data more robustly
-                parts = query.data.split('_', 2)
+                parts = query.data.split('_')
                 if len(parts) != 3:
                     await query.edit_message_text("❌ There was an error processing the request. Please try again.")
                     return
