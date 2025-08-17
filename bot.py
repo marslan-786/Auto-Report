@@ -313,6 +313,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 os.makedirs(user_session_folder)
             
             session_path = os.path.join(user_session_folder, phone_number)
+            
+            # Check if session file already exists
+            if os.path.exists(session_path + '.session'):
+                await update.message.reply_text("This account is already logged in. If you are having issues, please delete the old session file and try again.")
+                context.user_data['state'] = None
+                return
 
             client = TelegramClient(session_path, API_ID, API_HASH)
             await client.connect()
@@ -563,13 +569,19 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
     async with session_locks[phone_number]:
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
         session_path = os.path.join(session_folder, phone_number)
+        
+        # Check if session folder exists. If not, this is a clear sign of the problem.
+        if not os.path.exists(session_folder):
+            await context.bot.send_message(chat_id=chat_id, text=f"❌ The session folder for account {mask_phone_number(phone_number)} was not found at `{session_folder}`. This indicates that the account was either not logged in correctly or the session file was moved/deleted. Please re-login to fix this.")
+            return
+            
+        # Check if the session file exists inside the correct folder.
+        if not os.path.exists(session_path + '.session'):
+            await context.bot.send_message(chat_id=chat_id, text=f"❌ The session file for account {mask_phone_number(phone_number)} was not found at `{session_path}.session`. This could mean the file was not created correctly. Please re-login this account to fix this.")
+            return
 
+        client = None
         try:
-            # New check to see if the session file exists before trying to open it
-            if not os.path.exists(session_path + '.session'):
-                await context.bot.send_message(chat_id=chat_id, text=f"❌ Session file for account {mask_phone_number(phone_number)} not found. Please re-login this account.")
-                return
-
             client = TelegramClient(session_path, API_ID, API_HASH)
             await client.connect()
 
