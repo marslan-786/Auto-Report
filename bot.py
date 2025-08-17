@@ -570,6 +570,7 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
     async with session_locks[phone_number]:
         # Corrected session folder and path creation
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
+        # Corrected: Use only phone number as the session file name
         session_path = os.path.join(session_folder, phone_number)
         
         try:
