@@ -15,6 +15,7 @@ from telethon.tl.types import (
 from telethon.errors import RPCError, FloodWaitError
 import traceback
 import random
+import sqlite3
 
 # --- OWNER DETAILS & BOT CONFIGURATION ---
 # Replace with your own Telegram Chat ID and Username
@@ -548,15 +549,16 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
             await context.bot.send_message(chat_id=chat_id, text=f"❌ Account {mask_phone_number(phone_number)}'s session folder not found. Please re-login this account to fix this.")
             return
 
-        client = TelegramClient(session_path, API_ID, API_HASH)
-        await client.connect()
-
-        if not await client.is_user_authorized():
-            await client.disconnect()
-            await context.bot.send_message(chat_id=chat_id, text=f"Account {mask_phone_number(phone_number)} is not authorized. Skipping channel list.")
-            return
-
+        client = None
         try:
+            client = TelegramClient(session_path, API_ID, API_HASH)
+            await client.connect()
+
+            if not await client.is_user_authorized():
+                await client.disconnect()
+                await context.bot.send_message(chat_id=chat_id, text=f"Account {mask_phone_number(phone_number)} is not authorized. Skipping channel list.")
+                return
+
             dialogs = await client.get_dialogs()
             channels = [d.entity.title for d in dialogs if isinstance(d.entity, Channel)]
             
@@ -565,10 +567,13 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
                 await context.bot.send_message(chat_id=chat_id, text=f"Channels for account {mask_phone_number(phone_number)}:\n\n{channel_list_text}")
             else:
                 await context.bot.send_message(chat_id=chat_id, text=f"Account {mask_phone_number(phone_number)} has not joined any channels.")
+        except sqlite3.OperationalError:
+            await context.bot.send_message(chat_id=chat_id, text=f"❌ Could not open the session file for {mask_phone_number(phone_number)}. This might be because another process is using it. Please try again later or re-login this account.")
         except Exception as e:
             await context.bot.send_message(chat_id=chat_id, text=f"❌ Could not fetch channels for account {mask_phone_number(phone_number)}. Reason: {e}")
         finally:
-            await client.disconnect()
+            if client and client.is_connected():
+                await client.disconnect()
             await context.bot.send_message(chat_id=chat_id, text=f"✅ Channel fetching for account {mask_phone_number(phone_number)} completed.")
 
 async def create_full_backup(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE):
