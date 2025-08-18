@@ -44,13 +44,33 @@ REPORT_OPTIONS = {
     'It’s not illegal, but must be taken down': b'b'
 }
 
-# Mapping for Illegal goods subtypes based on your provided API response
-ILLEGAL_GOODS_OPTIONS = {
-    'Weapons': b'41',
-    'Drugs': b'42',
-    'Fake documents': b'43',
-    'Counterfeit money': b'44',
-    'Other goods': b'45'
+# Mapping for specific report subtypes
+REPORT_SUBTYPES = {
+    'Scam or spam': {
+        'Phishing': b'81',
+        'Impersonation': b'82',
+        'Fraudulent sales': b'83',
+        'Spam': b'84'
+    },
+    'Illegal goods': {
+        'Weapons': b'41',
+        'Drugs': b'42',
+        'Fake documents': b'43',
+        'Counterfeit money': b'44',
+        'Other goods': b'45'
+    },
+    'Illegal adult content': {
+        'Nudity': b'51',
+        'Sexual abuse': b'52',
+        'Child sexual abuse material': b'53',
+        'Other adult content': b'54'
+    },
+    'Personal data': {
+        'Identity theft': b'61',
+        'Leaked phone number': b'62',
+        'Leaked address': b'63',
+        'Other personal data': b'64'
+    }
 }
 
 session_locks = {}
@@ -166,23 +186,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         report_type_text = query.data.split('_', 2)[-1]
         context.user_data['report_type_text'] = report_type_text
         
-        if report_type_text == 'Scam or spam':
-            scam_options_mapping = {
-                'Phishing': b'81',
-                'Impersonation': b'82',
-                'Fraudulent sales': b'83',
-                'Spam': b'84'
-            }
-            context.user_data['scam_options_mapping'] = scam_options_mapping
-            keyboard_buttons = [[InlineKeyboardButton(text=opt, callback_data=f'report_subtype_{opt}')] for opt in scam_options_mapping.keys()]
+        # Check if the main report type has subtypes
+        if report_type_text in REPORT_SUBTYPES:
+            subtype_options = REPORT_SUBTYPES[report_type_text]
+            keyboard_buttons = [[InlineKeyboardButton(text=opt, callback_data=f'report_subtype_{opt}')] for opt in subtype_options.keys()]
             reply_markup = InlineKeyboardMarkup(keyboard_buttons)
-            await query.edit_message_text("Please choose a specific reason for 'Scam or spam':", reply_markup=reply_markup)
-            context.user_data['state'] = 'awaiting_report_type_selection'
-        elif report_type_text == 'Illegal goods':
-            context.user_data['illegal_goods_mapping'] = ILLEGAL_GOODS_OPTIONS
-            keyboard_buttons = [[InlineKeyboardButton(text=opt, callback_data=f'report_subtype_{opt}')] for opt in ILLEGAL_GOODS_OPTIONS.keys()]
-            reply_markup = InlineKeyboardMarkup(keyboard_buttons)
-            await query.edit_message_text("Please choose a specific reason for 'Illegal goods':", reply_markup=reply_markup)
+            await query.edit_message_text(f"Please choose a specific reason for '{report_type_text}':", reply_markup=reply_markup)
             context.user_data['state'] = 'awaiting_report_type_selection'
         else:
             await query.edit_message_text(f"You selected '{report_type_text}'. Now, please provide a brief message and the number of times to report (e.g., 'Violent content 5').")
@@ -596,26 +605,23 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 message_id = int(match.group(2))
                 entity = await client.get_entity(channel_name)
 
-                report_options_res = await client(ReportRequest(peer=entity, id=[message_id], option=None, message=''))
-                
+                # Get the correct report option from the dictionaries
                 report_option_byte = None
                 
-                # Check for `ReportResultChooseOption` to get dynamic options
-                if isinstance(report_options_res, ReportResultChooseOption):
-                    report_options_dict = {opt.text: opt.option for opt in report_options_res.options}
-                    report_option_byte = report_options_dict.get(report_type_text)
+                # Check for subtype options first
+                found_subtype = False
+                for main_type, subtypes in REPORT_SUBTYPES.items():
+                    if report_type_text in subtypes:
+                        report_option_byte = subtypes[report_type_text]
+                        found_subtype = True
+                        break
                 
-                # If dynamic options aren't available, fall back to our hardcoded options
-                if report_option_byte is None:
-                    if report_type_text in context.user_data.get('scam_options_mapping', {}):
-                        report_option_byte = context.user_data['scam_options_mapping'][report_type_text]
-                    elif report_type_text in context.user_data.get('illegal_goods_mapping', {}):
-                        report_option_byte = context.user_data['illegal_goods_mapping'][report_type_text]
-                    else:
-                        report_option_byte = REPORT_OPTIONS.get(report_type_text)
+                # If not a subtype, check main options
+                if not found_subtype:
+                    report_option_byte = REPORT_OPTIONS.get(report_type_text)
 
                 if report_option_byte is None:
-                    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected. Skipping.")
+                    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected: {report_type_text}. Skipping.")
                     return
                 
                 result = await client(ReportRequest(peer=entity, id=[message_id], option=report_option_byte, message=report_message))
