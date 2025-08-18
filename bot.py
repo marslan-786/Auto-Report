@@ -502,25 +502,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 context.user_data['state'] = None
                 return
             
-            # لوپ کو غیر متزامن بنانے اور ڈیلے شامل کرنے کے لیے نیا کوڈ
-            delay_per_report = 5  # Default delay for multiple accounts
-            if len(accounts_to_use) == 1:
-                delay_per_report = 10 # 10 second delay for a single account
-
             task_counter += 1
             task_id = task_counter
             
-            await update.message.reply_text(f"Starting to report '{target_link}' for you. This is task #{task_id}.")
+            await update.message.reply_text(f"Starting to report '{target_link}' for you. This is task #{task_id}. It will run in the background.")
 
-            await_tasks = []
-            for i in range(report_count):
-                for phone_number, account_user_id in accounts_to_use:
-                    # اس جگہ پر ڈیلے شامل کیا گیا ہے
-                    await asyncio.sleep(delay_per_report)
-                    task = asyncio.create_task(send_single_report(update, context, phone_number, target_link, report_type_text, i + 1, report_count, report_message, task_id, user_id, account_user_id))
-                    await_tasks.append(task)
-            
-            report_main_task = asyncio.create_task(report_task_manager(await_tasks, user_id, task_id))
+            # یہاں سے رپورٹنگ کا پورا عمل ایک نئے ٹاسک میں بھیجا جا رہا ہے
+            report_main_task = asyncio.create_task(start_reporting_process(update, context, accounts_to_use, target_link, report_type_text, report_count, report_message, task_id, user_id))
             
             if user_id not in user_tasks:
                 user_tasks[user_id] = {}
@@ -532,11 +520,28 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await update.message.reply_text("Please provide a comment and a number separated by a space (e.g., 'Violent content 5').")
             context.user_data['state'] = 'awaiting_report_comment_and_count'
 
-# --- نیا فنکشن جو بیک گراؤنڈ میں ٹاسکس کا انتظام کرے گا ---
-async def report_task_manager(tasks_list, user_id, task_id):
-    await asyncio.gather(*tasks_list, return_exceptions=True)
+# --- نیا فنکشن جو بیک گراؤنڈ میں تمام رپورٹنگ کا انتظام کرے گا ---
+async def start_reporting_process(update, context, accounts_to_use, target_link, report_type_text, report_count, report_message, task_id, user_id):
+    
+    delay_per_report = 5
+    if len(accounts_to_use) == 1:
+        delay_per_report = 10
+
+    await_tasks = []
+    for i in range(report_count):
+        for phone_number, account_user_id in accounts_to_use:
+            # اب یہاں پر ڈیلے ہے، لیکن یہ مین تھریڈ کو بلاک نہیں کرے گا
+            await asyncio.sleep(delay_per_report)
+            task = asyncio.create_task(send_single_report(update, context, phone_number, target_link, report_type_text, i + 1, report_count, report_message, task_id, user_id, account_user_id))
+            await_tasks.append(task)
+            
+    await asyncio.gather(*await_tasks, return_exceptions=True)
+    
     if user_id in user_tasks and task_id in user_tasks[user_id]:
         del user_tasks[user_id][task_id]
+    
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Reporting task #{task_id} has been completed.")
+
 
 async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -581,8 +586,6 @@ def get_logged_in_accounts(user_id, all_access=False):
 async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number, target_link, report_type_text, current_report_count, total_report_count, report_message, task_id, user_id, account_user_id):
     if phone_number not in session_locks:
         session_locks[phone_number] = asyncio.Lock()
-    
-    # await asyncio.sleep(random.uniform(5, 15)) # یہ والی لائن اب غیر ضروری ہے، کیونکہ ڈیلے مین لوپ میں ہے
     
     async with session_locks[phone_number]:
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
