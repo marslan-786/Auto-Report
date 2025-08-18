@@ -44,6 +44,15 @@ REPORT_OPTIONS = {
     'It’s not illegal, but must be taken down': b'b'
 }
 
+# Mapping for Illegal goods subtypes based on your provided API response
+ILLEGAL_GOODS_OPTIONS = {
+    'Weapons': b'41',
+    'Drugs': b'42',
+    'Fake documents': b'43',
+    'Counterfeit money': b'44',
+    'Other goods': b'45'
+}
+
 session_locks = {}
 user_tasks = {}
 task_counter = 0
@@ -100,6 +109,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = []
 
     is_user_granted = is_granted_user(user_id)
+    user_info = get_granted_user_info(user_id)
+    all_access = user_info.get('all_access') if user_info else False
     
     if is_owner(user_id):
         keyboard = [
@@ -117,12 +128,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         keyboard = [
             [InlineKeyboardButton("Login 🔐", callback_data='login_start')],
             [InlineKeyboardButton("Report Illegal Content 🚨", callback_data='report_start')],
-            [InlineKeyboardButton("My Accounts 👤", callback_data='my_accounts')],
-            [InlineKeyboardButton("My Channels 👥", callback_data='my_channels')],
         ]
+        if not all_access:
+            keyboard.append([InlineKeyboardButton("My Accounts 👤", callback_data='my_accounts')])
+            keyboard.append([InlineKeyboardButton("My Channels 👥", callback_data='my_channels')])
+
         text = 'Hello! You have limited access. Please choose an option:'
     else:
-        # Default access for any user to log in and use
         keyboard = [
             [InlineKeyboardButton("Login 🔐", callback_data='login_start')],
             [InlineKeyboardButton("Report Illegal Content 🚨", callback_data='report_start')],
@@ -166,6 +178,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             reply_markup = InlineKeyboardMarkup(keyboard_buttons)
             await query.edit_message_text("Please choose a specific reason for 'Scam or spam':", reply_markup=reply_markup)
             context.user_data['state'] = 'awaiting_report_type_selection'
+        elif report_type_text == 'Illegal goods':
+            context.user_data['illegal_goods_mapping'] = ILLEGAL_GOODS_OPTIONS
+            keyboard_buttons = [[InlineKeyboardButton(text=opt, callback_data=f'report_subtype_{opt}')] for opt in ILLEGAL_GOODS_OPTIONS.keys()]
+            reply_markup = InlineKeyboardMarkup(keyboard_buttons)
+            await query.edit_message_text("Please choose a specific reason for 'Illegal goods':", reply_markup=reply_markup)
+            context.user_data['state'] = 'awaiting_report_type_selection'
         else:
             await query.edit_message_text(f"You selected '{report_type_text}'. Now, please provide a brief message and the number of times to report (e.g., 'Violent content 5').")
             context.user_data['state'] = 'awaiting_report_comment_and_count'
@@ -177,6 +195,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data['state'] = 'awaiting_report_comment_and_count'
 
     elif query.data == 'my_accounts':
+        user_info = get_granted_user_info(user_id)
+        if not is_owner(user_id) and user_info and user_info.get('all_access'):
+            await query.edit_message_text("You do not have permission to view other users' accounts.")
+            return
         await manage_accounts(update, context)
 
     elif query.data.startswith('view_account_'):
@@ -232,6 +254,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await delete_account(update, context, phone_number, account_user_id)
 
     elif query.data == 'my_channels':
+        user_info = get_granted_user_info(user_id)
+        if not is_owner(user_id) and user_info and user_info.get('all_access'):
+            await query.edit_message_text("You do not have permission to view other users' channels.")
+            return
+
         accounts = get_logged_in_accounts(user_id, is_owner(user_id) or is_user_granted_access)
         if not accounts:
             await query.edit_message_text("No accounts are currently logged in.")
@@ -568,19 +595,31 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 channel_name = match.group(1)
                 message_id = int(match.group(2))
                 entity = await client.get_entity(channel_name)
+
+                report_options_res = await client(ReportRequest(peer=entity, id=[message_id], option=None, message=''))
                 
-                # Check for `Scam or spam` and its subtypes
-                if report_type_text in context.user_data.get('scam_options_mapping', {}):
-                    report_option_byte = context.user_data['scam_options_mapping'][report_type_text]
-                else:
-                    report_option_byte = REPORT_OPTIONS.get(report_type_text)
+                report_option_byte = None
+                
+                # Check for `ReportResultChooseOption` to get dynamic options
+                if isinstance(report_options_res, ReportResultChooseOption):
+                    report_options_dict = {opt.text: opt.option for opt in report_options_res.options}
+                    report_option_byte = report_options_dict.get(report_type_text)
+                
+                # If dynamic options aren't available, fall back to our hardcoded options
+                if report_option_byte is None:
+                    if report_type_text in context.user_data.get('scam_options_mapping', {}):
+                        report_option_byte = context.user_data['scam_options_mapping'][report_type_text]
+                    elif report_type_text in context.user_data.get('illegal_goods_mapping', {}):
+                        report_option_byte = context.user_data['illegal_goods_mapping'][report_type_text]
+                    else:
+                        report_option_byte = REPORT_OPTIONS.get(report_type_text)
 
                 if report_option_byte is None:
                     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected. Skipping.")
                     return
                 
                 result = await client(ReportRequest(peer=entity, id=[message_id], option=report_option_byte, message=report_message))
-
+                
                 response_message = f"✅ Report Send {current_report_count}/{total_report_count} task #{task_id}.\n\n"
                 response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
                 response_message += f"Original api response: {str(result)}"
@@ -759,8 +798,9 @@ async def manage_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = update.effective_user.id
     is_user_granted_access = is_granted_user(user_id)
+    user_info = get_granted_user_info(user_id)
     
-    all_access = is_owner(user_id) or (is_user_granted_access and get_granted_user_info(user_id).get('all_access'))
+    all_access = is_owner(user_id) or (is_user_granted_access and user_info.get('all_access'))
     accounts = get_logged_in_accounts(user_id, all_access)
 
     if not accounts:
