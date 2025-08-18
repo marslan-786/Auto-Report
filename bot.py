@@ -56,8 +56,13 @@ if not os.path.exists(GRANTED_USERS_FILE):
         json.dump([], f)
 
 def load_granted_users():
+    if not os.path.exists(GRANTED_USERS_FILE):
+        return []
     with open(GRANTED_USERS_FILE, 'r') as f:
-        return json.load(f)
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            return []
 
 def save_granted_users(users):
     with open(GRANTED_USERS_FILE, 'w') as f:
@@ -94,6 +99,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = ''
     keyboard = []
 
+    is_user_granted = is_granted_user(user_id)
+    
     if is_owner(user_id):
         keyboard = [
             [InlineKeyboardButton("Login 🔐", callback_data='login_start')],
@@ -106,137 +113,178 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             [InlineKeyboardButton("Grant Access ✨", callback_data='grant_access')]
         ]
         text = 'Hello Owner! Please choose an option:'
-    elif is_granted_user(user_id):
+    elif is_user_granted:
         keyboard = [
             [InlineKeyboardButton("Login 🔐", callback_data='login_start')],
             [InlineKeyboardButton("Report Illegal Content 🚨", callback_data='report_start')],
+            [InlineKeyboardButton("My Accounts 👤", callback_data='my_accounts')],
+            [InlineKeyboardButton("My Channels 👥", callback_data='my_channels')],
         ]
         text = 'Hello! You have limited access. Please choose an option:'
     else:
-        keyboard = [[InlineKeyboardButton("Contact Owner 👤", url=f"https://t.me/{OWNER_USERNAME}")]]
-        text = 'You cannot access this bot.'
+        # Default access for any user to log in and use
+        keyboard = [
+            [InlineKeyboardButton("Login 🔐", callback_data='login_start')],
+            [InlineKeyboardButton("Report Illegal Content 🚨", callback_data='report_start')],
+            [InlineKeyboardButton("My Accounts 👤", callback_data='my_accounts')],
+            [InlineKeyboardButton("My Channels 👥", callback_data='my_channels')]
+        ]
+        text = 'Welcome! You can log in your accounts and start using the bot.'
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(text, reply_markup=reply_markup)
+
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     user_id = update.effective_user.id
+    
+    # Check if the user is granted access
+    is_user_granted_access = is_granted_user(user_id)
+    
+    if query.data == 'login_start':
+        await query.edit_message_text(text="Please send your phone number with country code (e.g., +923001234567) to log in.")
+        context.user_data['state'] = 'awaiting_phone_number'
+    
+    elif query.data == 'report_start':
+        await query.edit_message_text(text="Please send the link of the channel or a post you want to report.")
+        context.user_data['state'] = 'awaiting_link'
 
-    # Logic for ALL users (owner and granted)
-    if is_owner(user_id) or is_granted_user(user_id):
-        if query.data == 'login_start':
-            await query.edit_message_text(text="Please send your phone number with country code (e.g., +923001234567) to log in.")
-            context.user_data['state'] = 'awaiting_phone_number'
+    elif query.data.startswith('report_type_'):
+        report_type_text = query.data.split('_', 2)[-1]
+        context.user_data['report_type_text'] = report_type_text
         
-        elif query.data == 'report_start':
-            await query.edit_message_text(text="Please send the link of the channel or a post you want to report.")
-            context.user_data['state'] = 'awaiting_link'
-
-        elif query.data.startswith('report_type_'):
-            report_type_text = query.data.split('_', 2)[-1]
-            context.user_data['report_type_text'] = report_type_text
-            await query.edit_message_text(f"You selected '{report_type_text}'. Now, please provide a brief message explaining the violation and then the number of times to report (e.g., 'Violent content, 5').")
+        # Check for Scam or Spam to show sub-options
+        if report_type_text == 'Scam or spam':
+            # This is a dummy list, in a real scenario you would get these from the API dynamically.
+            # But based on the provided API response, we hardcode them.
+            scam_options = ['Phishing', 'Impersonation', 'Fraudulent sales', 'Spam']
+            keyboard_buttons = [[InlineKeyboardButton(text=opt, callback_data=f'report_subtype_{opt}')] for opt in scam_options]
+            reply_markup = InlineKeyboardMarkup(keyboard_buttons)
+            await query.edit_message_text("Please choose a specific reason for 'Scam or spam':", reply_markup=reply_markup)
+            context.user_data['state'] = 'awaiting_report_type_selection'
+        else:
+            await query.edit_message_text(f"You selected '{report_type_text}'. Now, please provide a brief message and the number of times to report (e.g., 'Violent content 5').")
             context.user_data['state'] = 'awaiting_report_comment_and_count'
-
-    # Logic only for Owner
-    if is_owner(user_id):
-        if query.data == 'join_channel':
-            await query.edit_message_text(text="Please send the invite link of the channel you want to join (e.g., https://t.me/+AbCdeFghIjklMnOp).")
-            context.user_data['state'] = 'awaiting_join_link'
-        
-        elif query.data == 'my_accounts':
-            await manage_accounts(update, context)
-
-        elif query.data.startswith('view_account_'):
-            parts = query.data.split('_')
-            if len(parts) != 4:
-                await query.edit_message_text("❌ An error occurred. Please try again.")
-                return
             
-            phone_number, account_user_id = parts[2], parts[3]
+    elif query.data.startswith('report_subtype_'):
+        report_subtype_text = query.data.split('_', 2)[-1]
+        context.user_data['report_type_text'] = report_subtype_text
+        await query.edit_message_text(f"You selected '{report_subtype_text}'. Now, please provide a brief message and the number of times to report (e.g., 'Violent content 5').")
+        context.user_data['state'] = 'awaiting_report_comment_and_count'
+
+
+    elif query.data == 'my_accounts':
+        await manage_accounts(update, context)
+
+    elif query.data.startswith('view_account_'):
+        parts = query.data.split('_')
+        if len(parts) != 4:
+            await query.edit_message_text("❌ An error occurred. Please try again.")
+            return
+        
+        phone_number, account_user_id = parts[2], parts[3]
+        
+        # Only show delete button to the owner or the user who owns the account
+        if is_owner(user_id) or (user_id == int(account_user_id)):
             keyboard = [[
                 InlineKeyboardButton("Delete Account 🗑️", callback_data=f'confirm_delete_{phone_number}_{account_user_id}'),
                 InlineKeyboardButton("Back ↩️", callback_data='my_accounts')
             ]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(f"Options for account: {mask_phone_number(phone_number)}", reply_markup=reply_markup)
+        else:
+            keyboard = [[InlineKeyboardButton("Back ↩️", callback_data='my_accounts')]]
             
-        elif query.data.startswith('confirm_delete_'):
-            parts = query.data.split('_')
-            if len(parts) != 4:
-                await query.edit_message_text("❌ An error occurred. Please try again.")
-                return
-            
-            phone_number, account_user_id = parts[2], parts[3]
-            
-            keyboard = [[
-                InlineKeyboardButton("Confirm Delete ⚠️", callback_data=f'delete_account_{phone_number}_{account_user_id}'),
-                InlineKeyboardButton("Cancel ❌", callback_data=f'view_account_{phone_number}_{account_user_id}')
-            ]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(f"Are you sure you want to delete the session for {mask_phone_number(phone_number)}?", reply_markup=reply_markup)
-            
-        elif query.data.startswith('delete_account_'):
-            parts = query.data.split('_')
-            if len(parts) != 4:
-                await query.edit_message_text("❌ An error occurred. Please try again.")
-                return
-            
-            phone_number, account_user_id = parts[2], parts[3]
-            await delete_account(update, context, phone_number, account_user_id)
-
-        elif query.data == 'my_channels':
-            accounts = get_logged_in_accounts(user_id, all_access=True)
-            if not accounts:
-                await query.edit_message_text("No accounts are currently logged in.")
-                return
-            
-            keyboard = [[InlineKeyboardButton(text=f"{acc[0]} (User: {acc[1]})", callback_data=f'show_channels_{acc[0]}_{acc[1]}')] for acc in accounts]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text("Please select an account to view its channels:", reply_markup=reply_markup)
-
-        elif query.data.startswith('show_channels_'):
-            try:
-                # Corrected logic to handle the callback data more robustly
-                parts = query.data.split('_')
-                if len(parts) != 3:
-                    await query.edit_message_text("❌ There was an error processing the request. Please try again.")
-                    return
-                    
-                _, phone_number, account_user_id_str = parts
-                account_user_id = int(account_user_id_str)
-                
-            except (ValueError, IndexError):
-                await query.edit_message_text("❌ Could not parse account details. Please try again or contact support.")
-                return
-                
-            await query.edit_message_text(f"Fetching channels for account {phone_number}. This may take a moment...")
-            await get_user_channels(query, context, phone_number, account_user_id)
-            
-        elif query.data == 'backup_sessions':
-            await query.edit_message_text("Creating a full project backup. This may take a moment...")
-            await create_full_backup(query, context)
-            await query.message.reply_text("Backup process completed.")
-
-        elif query.data == 'manage_users':
-            await query.edit_message_text("Fetching list of granted users...")
-            await list_granted_users(query, context)
-            
-        elif query.data == 'grant_access':
-            await query.edit_message_text("Please send the user's Chat ID or Username, duration, and optionally 'true' for all-access (e.g., `123456789 1h true`).")
-            context.user_data['state'] = 'awaiting_grant_info'
-
-        elif query.data.startswith('delete_access_'):
-            user_to_delete = int(query.data.split('_', 2)[-1])
-            await delete_access(query, context, user_to_delete)
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(f"Options for account: {mask_phone_number(phone_number)}", reply_markup=reply_markup)
         
-        elif query.data.startswith('reset_access_'):
-            user_to_reset = int(query.data.split('_', 2)[-1])
-            context.user_data['state'] = 'awaiting_reset_info'
-            context.user_data['user_to_reset'] = user_to_reset
-            await query.edit_message_text(f"Please send the new duration for user {user_to_reset} (e.g., `1h`, `1d`).")
+    elif query.data.startswith('confirm_delete_'):
+        parts = query.data.split('_')
+        if len(parts) != 4:
+            await query.edit_message_text("❌ An error occurred. Please try again.")
+            return
+        
+        phone_number, account_user_id = parts[2], parts[3]
+        
+        # Security check: only the owner or the account owner can delete
+        if not is_owner(user_id) and not (user_id == int(account_user_id)):
+            await query.edit_message_text("❌ You do not have permission to delete this account.")
+            return
+
+        keyboard = [[
+            InlineKeyboardButton("Confirm Delete ⚠️", callback_data=f'delete_account_{phone_number}_{account_user_id}'),
+            InlineKeyboardButton("Cancel ❌", callback_data=f'view_account_{phone_number}_{account_user_id}')
+        ]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(f"Are you sure you want to delete the session for {mask_phone_number(phone_number)}?", reply_markup=reply_markup)
+        
+    elif query.data.startswith('delete_account_'):
+        parts = query.data.split('_')
+        if len(parts) != 4:
+            await query.edit_message_text("❌ An error occurred. Please try again.")
+            return
+        
+        phone_number, account_user_id = parts[2], parts[3]
+
+        if not is_owner(user_id) and not (user_id == int(account_user_id)):
+            await query.edit_message_text("❌ You do not have permission to delete this account.")
+            return
+
+        await delete_account(update, context, phone_number, account_user_id)
+
+    elif query.data == 'my_channels':
+        accounts = get_logged_in_accounts(user_id, is_owner(user_id) or is_user_granted_access)
+        if not accounts:
+            await query.edit_message_text("No accounts are currently logged in.")
+            return
+        
+        keyboard = [[InlineKeyboardButton(text=f"{acc[0]} (User: {acc[1]})", callback_data=f'show_channels_{acc[0]}_{acc[1]}')] for acc in accounts]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("Please select an account to view its channels:", reply_markup=reply_markup)
+
+    elif query.data.startswith('show_channels_'):
+        try:
+            parts = query.data.split('_')
+            if len(parts) != 3:
+                await query.edit_message_text("❌ There was an error processing the request. Please try again.")
+                return
+                
+            _, phone_number, account_user_id_str = parts
+            account_user_id = int(account_user_id_str)
+            
+        except (ValueError, IndexError):
+            await query.edit_message_text("❌ Could not parse account details. Please try again or contact support.")
+            return
+            
+        await query.edit_message_text(f"Fetching channels for account {phone_number}. This may take a moment...")
+        await get_user_channels(query, context, phone_number, account_user_id)
+        
+    elif query.data == 'backup_sessions' and is_owner(user_id):
+        await query.edit_message_text("Creating a full project backup. This may take a moment...")
+        await create_full_backup(query, context)
+        await query.message.reply_text("Backup process completed.")
+        
+    elif query.data == 'manage_users' and is_owner(user_id):
+        await query.edit_message_text("Fetching list of granted users...")
+        await list_granted_users(query, context)
+        
+    elif query.data == 'grant_access' and is_owner(user_id):
+        await query.edit_message_text("Please send the user's Chat ID or Username, duration, and optionally 'true' for all-access (e.g., `123456789 1h true`).")
+        context.user_data['state'] = 'awaiting_grant_info'
+
+    elif query.data.startswith('delete_access_') and is_owner(user_id):
+        user_to_delete = int(query.data.split('_', 2)[-1])
+        await delete_access(query, context, user_to_delete)
+    
+    elif query.data.startswith('reset_access_') and is_owner(user_id):
+        user_to_reset = int(query.data.split('_', 2)[-1])
+        context.user_data['state'] = 'awaiting_reset_info'
+        context.user_data['user_to_reset'] = user_to_reset
+        await query.edit_message_text(f"Please send the new duration for user {user_to_reset} (e.g., `1h`, `1d`).")
+        
+    elif query.data == 'start':
+        await start(update, context)
+
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global task_counter
@@ -244,100 +292,114 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_state = context.user_data.get('state')
     user_id = update.effective_user.id
     
-    if is_owner(user_id) and user_state == 'awaiting_grant_info':
-        parts = user_message.split()
-        if not (2 <= len(parts) <= 3):
-            await update.message.reply_text("Invalid format. Please provide the ID/Username, duration, and optionally 'true' (e.g., `123456789 1h true`).")
-            context.user_data['state'] = None
-            return
-
-        target_str, duration_str = parts[0], parts[1]
-        all_access = parts[2].lower() == 'true' if len(parts) == 3 else False
-        
-        try:
-            if not target_str.isdigit():
-                chat_id = (await context.bot.get_chat(target_str)).id
-            else:
-                chat_id = int(target_str)
-        except Exception:
-            await update.message.reply_text("Could not find a user with that ID or Username. Please try again.")
-            context.user_data['state'] = None
-            return
-
-        try:
-            unit = duration_str[-1].lower()
-            value = int(duration_str[:-1])
-            
-            if unit == 'h':
-                delta = timedelta(hours=value)
-            elif unit == 'd':
-                delta = timedelta(days=value)
-            else:
-                await update.message.reply_text("Invalid duration format. Use 'h' for hours or 'd' for days (e.g., '1h', '2d').")
+    # --- Owner Only States ---
+    if is_owner(user_id):
+        if user_state == 'awaiting_grant_info':
+            parts = user_message.split()
+            if not (2 <= len(parts) <= 3):
+                await update.message.reply_text("Invalid format. Please provide the ID/Username, duration, and optionally 'true' (e.g., `123456789 1h true`).")
                 context.user_data['state'] = None
                 return
 
-            expires_at = (datetime.now() + delta).isoformat()
+            target_str, duration_str = parts[0], parts[1]
+            all_access = parts[2].lower() == 'true' if len(parts) == 3 else False
             
-            granted_users = load_granted_users()
-            user_found = False
-            for user in granted_users:
-                if user['user_id'] == chat_id:
-                    user['expires_at'] = expires_at
-                    user['all_access'] = all_access
-                    user_found = True
-                    break
-            
-            if not user_found:
-                granted_users.append({'user_id': chat_id, 'expires_at': expires_at, 'all_access': all_access})
-            
-            save_granted_users(granted_users)
-            access_type = "full access" if all_access else "limited access"
-            await update.message.reply_text(f"✅ Access granted to user ID {chat_id} with {access_type} until {datetime.fromisoformat(expires_at).strftime('%Y-%m-%d %H:%M')}.")
-            context.user_data['state'] = None
-
-        except (ValueError, IndexError):
-            await update.message.reply_text("Invalid format. Please provide the ID and duration (e.g., `123456789 1h`).")
-            context.user_data['state'] = None
-
-    elif is_owner(user_id) and user_state == 'awaiting_reset_info':
-        user_to_reset = context.user_data.get('user_to_reset')
-        duration_str = user_message.strip()
-        try:
-            unit = duration_str[-1].lower()
-            value = int(duration_str[:-1])
-            
-            if unit == 'h':
-                delta = timedelta(hours=value)
-            elif unit == 'd':
-                delta = timedelta(days=value)
-            else:
-                await update.message.reply_text("Invalid duration format. Use 'h' for hours or 'd' for days (e.g., '1h', '2d').")
-                context.user_data['state'] = 'awaiting_reset_info'
+            try:
+                if not target_str.isdigit():
+                    chat_id = (await context.bot.get_chat(target_str)).id
+                else:
+                    chat_id = int(target_str)
+            except Exception:
+                await update.message.reply_text("Could not find a user with that ID or Username. Please try again.")
+                context.user_data['state'] = None
                 return
 
-            expires_at = (datetime.now() + delta).isoformat()
-            granted_users = load_granted_users()
-            user_found = False
-            for user in granted_users:
-                if user['user_id'] == user_to_reset:
-                    user['expires_at'] = expires_at
-                    user_found = True
-                    break
-            
-            if user_found:
-                save_granted_users(granted_users)
-                await update.message.reply_text(f"✅ Access for user {user_to_reset} has been reset until {datetime.fromisoformat(expires_at).strftime('%Y-%m-%d %H:%M')}.")
-            else:
-                await update.message.reply_text(f"User {user_to_reset} not found in granted list.")
-            
-            context.user_data['state'] = None
-            context.user_data.pop('user_to_reset', None)
-        except (ValueError, IndexError):
-            await update.message.reply_text("Invalid duration format. Please provide a duration (e.g., '1h', '2d').")
-            context.user_data['state'] = 'awaiting_reset_info'
+            try:
+                unit = duration_str[-1].lower()
+                value = int(duration_str[:-1])
+                
+                if unit == 'h':
+                    delta = timedelta(hours=value)
+                elif unit == 'd':
+                    delta = timedelta(days=value)
+                else:
+                    await update.message.reply_text("Invalid duration format. Use 'h' for hours or 'd' for days (e.g., '1h', '2d').")
+                    context.user_data['state'] = None
+                    return
 
-    elif (is_owner(user_id) or is_granted_user(user_id)) and user_state == 'awaiting_phone_number':
+                expires_at = (datetime.now() + delta).isoformat()
+                
+                granted_users = load_granted_users()
+                user_found = False
+                for user in granted_users:
+                    if user['user_id'] == chat_id:
+                        user['expires_at'] = expires_at
+                        user['all_access'] = all_access
+                        user_found = True
+                        break
+                
+                if not user_found:
+                    granted_users.append({'user_id': chat_id, 'expires_at': expires_at, 'all_access': all_access})
+                
+                save_granted_users(granted_users)
+                access_type = "full access" if all_access else "limited access"
+                await update.message.reply_text(f"✅ Access granted to user ID {chat_id} with {access_type} until {datetime.fromisoformat(expires_at).strftime('%Y-%m-%d %H:%M')}.")
+                context.user_data['state'] = None
+
+            except (ValueError, IndexError):
+                await update.message.reply_text("Invalid format. Please provide the ID and duration (e.g., `123456789 1h`).")
+                context.user_data['state'] = None
+
+        elif user_state == 'awaiting_reset_info':
+            user_to_reset = context.user_data.get('user_to_reset')
+            duration_str = user_message.strip()
+            try:
+                unit = duration_str[-1].lower()
+                value = int(duration_str[:-1])
+                
+                if unit == 'h':
+                    delta = timedelta(hours=value)
+                elif unit == 'd':
+                    delta = timedelta(days=value)
+                else:
+                    await update.message.reply_text("Invalid duration format. Use 'h' for hours or 'd' for days (e.g., '1h', '2d').")
+                    context.user_data['state'] = 'awaiting_reset_info'
+                    return
+
+                expires_at = (datetime.now() + delta).isoformat()
+                granted_users = load_granted_users()
+                user_found = False
+                for user in granted_users:
+                    if user['user_id'] == user_to_reset:
+                        user['expires_at'] = expires_at
+                        user_found = True
+                        break
+                
+                if user_found:
+                    save_granted_users(granted_users)
+                    await update.message.reply_text(f"✅ Access for user {user_to_reset} has been reset until {datetime.fromisoformat(expires_at).strftime('%Y-%m-%d %H:%M')}.")
+                else:
+                    await update.message.reply_text(f"User {user_to_reset} not found in granted list.")
+                
+                context.user_data['state'] = None
+                context.user_data.pop('user_to_reset', None)
+            except (ValueError, IndexError):
+                await update.message.reply_text("Invalid duration format. Please provide a duration (e.g., '1h', '2d').")
+                context.user_data['state'] = 'awaiting_reset_info'
+
+        elif user_state == 'awaiting_join_link':
+            invite_link = user_message
+            accounts = get_logged_in_accounts(user_id, all_access=True)
+            if not accounts:
+                await update.message.reply_text("No accounts logged in to join channels.")
+                return
+
+            task = asyncio.create_task(join_channels_in_background(update, context, invite_link, accounts))
+            await update.message.reply_text("All join requests have been sent. They are now processing in the background.")
+            context.user_data['state'] = None
+
+    # --- All Users States ---
+    if user_state == 'awaiting_phone_number':
         phone_number = user_message
         try:
             user_session_folder = os.path.join(SESSION_FOLDER, str(user_id))
@@ -367,7 +429,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await update.message.reply_text(f"An error occurred: {e}. Please try again.")
             context.user_data['state'] = None
 
-    elif (is_owner(user_id) or is_granted_user(user_id)) and user_state == 'awaiting_otp':
+    elif user_state == 'awaiting_otp':
         otp = user_message
         client = context.user_data.get('client')
         phone_number = context.user_data.get('phone_number')
@@ -386,27 +448,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except Exception as e:
             await update.message.reply_text(f"Invalid OTP. Please try again.")
             
-    elif (is_owner(user_id) or is_granted_user(user_id)) and user_state == 'awaiting_link':
+    elif user_state == 'awaiting_link':
         context.user_data['target_link'] = user_message
         keyboard_buttons = [[InlineKeyboardButton(text=key, callback_data=f'report_type_{key}')] for key in REPORT_OPTIONS.keys()]
         reply_markup = InlineKeyboardMarkup(keyboard_buttons)
         await update.message.reply_text("Please choose a report type:", reply_markup=reply_markup)
         context.user_data['state'] = 'awaiting_report_type_selection'
 
-    elif is_owner(user_id) and user_state == 'awaiting_join_link':
-        invite_link = user_message
-        accounts = get_logged_in_accounts(user_id, all_access=True)
-        if not accounts:
-            await update.message.reply_text("No accounts logged in to join channels.")
-            return
-
-        task = asyncio.create_task(join_channels_in_background(update, context, invite_link, accounts))
-        await update.message.reply_text("All join requests have been sent. They are now processing in the background.")
-        context.user_data['state'] = None
-
-    elif (is_owner(user_id) or is_granted_user(user_id)) and user_state == 'awaiting_report_comment_and_count':
+    elif user_state == 'awaiting_report_comment_and_count':
         try:
-            parts = user_message.rsplit(',', 1)
+            # New logic to handle space separated input
+            parts = user_message.rsplit(' ', 1)
             report_message = parts[0].strip()
             report_count = int(parts[1].strip())
             
@@ -414,7 +466,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             report_type_text = context.user_data.get('report_type_text')
 
             user_info = get_granted_user_info(user_id)
-            accounts_to_use = get_logged_in_accounts(user_id, user_info['all_access'] if user_info else False)
+            accounts_to_use = get_logged_in_accounts(user_id, is_owner(user_id) or (user_info and user_info.get('all_access')))
             
             if not accounts_to_use:
                 await update.message.reply_text("No accounts logged in to send reports.")
@@ -426,16 +478,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             
             await update.message.reply_text(f"Starting to report '{target_link}' for you. This is task #{task_id}.")
 
-            # Determine the delay based on the number of accounts
             if len(accounts_to_use) > 1:
-                report_delay = 5  # 5 seconds delay for each report in a cycle
+                report_delay = 5
             else:
-                report_delay = 10 # 10 seconds delay for single account
+                report_delay = 10
 
             tasks = []
             for i in range(report_count):
                 for phone_number, account_user_id in accounts_to_use:
-                    # Delay before sending each report
                     await asyncio.sleep(report_delay)
                     task = asyncio.create_task(send_single_report(update, context, phone_number, target_link, report_type_text, i + 1, report_count, report_message, task_id, user_id, account_user_id))
                     tasks.append(task)
@@ -447,7 +497,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             context.user_data['state'] = None
             
         except (ValueError, IndexError):
-            await update.message.reply_text("Please provide a comment and a number separated by a comma (e.g., 'Violent content, 5').")
+            await update.message.reply_text("Please provide a comment and a number separated by a space (e.g., 'Violent content 5').")
             context.user_data['state'] = 'awaiting_report_comment_and_count'
 
 async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -472,7 +522,6 @@ async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
 def get_logged_in_accounts(user_id, all_access=False):
     accounts = []
-    # If the user has all-access, check all folders in the sessions directory.
     if all_access:
         for user_folder in os.listdir(SESSION_FOLDER):
             user_path = os.path.join(SESSION_FOLDER, user_folder)
@@ -481,7 +530,6 @@ def get_logged_in_accounts(user_id, all_access=False):
                     if filename.endswith('.session'):
                         phone_number = os.path.splitext(filename)[0]
                         accounts.append((phone_number, int(user_folder)))
-    # If the user has limited access, only check their specific folder.
     else:
         user_path = os.path.join(SESSION_FOLDER, str(user_id))
         if os.path.exists(user_path):
@@ -496,11 +544,9 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
         session_locks[phone_number] = asyncio.Lock()
     
     async with session_locks[phone_number]:
-        # Corrected session path to use user_id folder
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
         session_path = os.path.join(session_folder, phone_number)
         
-        # Ensure the session folder exists before trying to open the file
         if not os.path.exists(session_folder):
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session folder not found. Skipping.")
             return
@@ -524,14 +570,31 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 channel_name = match.group(1)
                 message_id = int(match.group(2))
                 entity = await client.get_entity(channel_name)
-                report_option_byte = REPORT_OPTIONS.get(report_type_text)
-
-                result = await client(ReportRequest(peer=entity, id=[message_id], option=report_option_byte, message=report_message))
                 
-                response_message = f"✅ Report Send {current_report_count}/{total_report_count} task #{task_id}.\n\n"
-                response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
-                response_message += f"Original api response: {str(result)}"
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
+                # Fetching report options from the API directly
+                report_options_res = await client(ReportRequest(peer=entity, id=[message_id], option=None, message=''))
+                
+                if isinstance(report_options_res, ReportResultChooseOption):
+                    report_options_dict = {opt.text: opt.option for opt in report_options_res.options}
+                    report_option_byte = report_options_dict.get(report_type_text)
+                    if report_option_byte:
+                        result = await client(ReportRequest(peer=entity, id=[message_id], option=report_option_byte, message=report_message))
+                    else:
+                        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected for this message. Skipping.")
+                        result = None
+                else:
+                    report_option_byte = REPORT_OPTIONS.get(report_type_text)
+                    if report_option_byte:
+                        result = await client(ReportRequest(peer=entity, id=[message_id], option=report_option_byte, message=report_message))
+                    else:
+                        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected. Skipping.")
+                        result = None
+
+                if result:
+                    response_message = f"✅ Report Send {current_report_count}/{total_report_count} task #{task_id}.\n\n"
+                    response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
+                    response_message += f"Original api response: {str(result)}"
+                    await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
                     
             else:
                 entity = await client.get_entity(target_link)
@@ -550,6 +613,7 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {current_report_count}/{total_report_count} from {mask_phone_number(phone_number)} failed for task #{task_id}. Reason: {e}")
         except Exception as e:
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {current_report_count}/{total_report_count} from {mask_phone_number(phone_number)} failed for task #{task_id}. Reason: {e}")
+            print(traceback.format_exc())
         finally:
             await client.disconnect()
             
@@ -567,7 +631,6 @@ async def join_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, phone
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
         session_path = os.path.join(session_folder, phone_number)
 
-        # Ensure the session folder exists before trying to open the file
         if not os.path.exists(session_folder):
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session folder not found. Skipping join request.")
             return
@@ -605,12 +668,10 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
         session_locks[phone_number] = asyncio.Lock()
 
     async with session_locks[phone_number]:
-        # Corrected session folder and path creation
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
         session_path = os.path.join(session_folder, phone_number)
         
         try:
-            # New and improved checks
             if not os.path.exists(session_path + '.session'):
                 await context.bot.send_message(chat_id=chat_id, text=f"❌ The session file for account {mask_phone_number(phone_number)} was not found at `{session_path}.session`. Please re-login this account to fix this.")
                 return
@@ -707,7 +768,11 @@ async def delete_access(query: Update.callback_query, context: ContextTypes.DEFA
 async def manage_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = update.effective_user.id
-    accounts = get_logged_in_accounts(user_id, all_access=True)
+    is_user_granted_access = is_granted_user(user_id)
+    
+    # Get all accounts if owner or granted all access, otherwise only get user's own accounts
+    all_access = is_owner(user_id) or (is_user_granted_access and get_granted_user_info(user_id).get('all_access'))
+    accounts = get_logged_in_accounts(user_id, all_access)
 
     if not accounts:
         await query.edit_message_text("No accounts are currently logged in.")
@@ -733,6 +798,11 @@ async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE, pho
     try:
         if os.path.exists(session_file_path):
             os.remove(session_file_path)
+            # Remove the journal file as well if it exists
+            journal_file_path = f"{session_file_path}-journal"
+            if os.path.exists(journal_file_path):
+                os.remove(journal_file_path)
+            
             await query.edit_message_text(f"✅ Session file for {mask_phone_number(phone_number)} has been deleted.")
         else:
             await query.edit_message_text(f"❌ Session file for {mask_phone_number(phone_number)} not found.")
