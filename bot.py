@@ -10,7 +10,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telethon.tl.functions.messages import ReportRequest, ReportSpamRequest, ImportChatInviteRequest
 from telethon.tl.types import (
-    InputPeerChannel, Channel
+    InputPeerChannel, Channel, ReportResultChooseOption, MessageReportOption
 )
 from telethon.errors import RPCError, FloodWaitError
 import traceback
@@ -29,7 +29,7 @@ BOT_TOKEN = '8324191756:AAF28XJJ9wSO2jZ5iFIqlrdEbjqHFX190Pk'
 SESSION_FOLDER = 'sessions'
 GRANTED_USERS_FILE = 'granted_users.json'
 
-# Map report types to the byte values from the API response
+# Mapping for main report types
 REPORT_OPTIONS = {
     'Scam or spam': b'8',
     'Violence': b'3',
@@ -140,7 +140,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.answer()
     user_id = update.effective_user.id
     
-    # Check if the user is granted access
     is_user_granted_access = is_granted_user(user_id)
     
     if query.data == 'login_start':
@@ -155,12 +154,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         report_type_text = query.data.split('_', 2)[-1]
         context.user_data['report_type_text'] = report_type_text
         
-        # Check for Scam or Spam to show sub-options
         if report_type_text == 'Scam or spam':
-            # This is a dummy list, in a real scenario you would get these from the API dynamically.
-            # But based on the provided API response, we hardcode them.
-            scam_options = ['Phishing', 'Impersonation', 'Fraudulent sales', 'Spam']
-            keyboard_buttons = [[InlineKeyboardButton(text=opt, callback_data=f'report_subtype_{opt}')] for opt in scam_options]
+            scam_options_mapping = {
+                'Phishing': b'81',
+                'Impersonation': b'82',
+                'Fraudulent sales': b'83',
+                'Spam': b'84'
+            }
+            context.user_data['scam_options_mapping'] = scam_options_mapping
+            keyboard_buttons = [[InlineKeyboardButton(text=opt, callback_data=f'report_subtype_{opt}')] for opt in scam_options_mapping.keys()]
             reply_markup = InlineKeyboardMarkup(keyboard_buttons)
             await query.edit_message_text("Please choose a specific reason for 'Scam or spam':", reply_markup=reply_markup)
             context.user_data['state'] = 'awaiting_report_type_selection'
@@ -174,7 +176,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.edit_message_text(f"You selected '{report_subtype_text}'. Now, please provide a brief message and the number of times to report (e.g., 'Violent content 5').")
         context.user_data['state'] = 'awaiting_report_comment_and_count'
 
-
     elif query.data == 'my_accounts':
         await manage_accounts(update, context)
 
@@ -186,7 +187,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
         phone_number, account_user_id = parts[2], parts[3]
         
-        # Only show delete button to the owner or the user who owns the account
         if is_owner(user_id) or (user_id == int(account_user_id)):
             keyboard = [[
                 InlineKeyboardButton("Delete Account 🗑️", callback_data=f'confirm_delete_{phone_number}_{account_user_id}'),
@@ -206,7 +206,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
         phone_number, account_user_id = parts[2], parts[3]
         
-        # Security check: only the owner or the account owner can delete
         if not is_owner(user_id) and not (user_id == int(account_user_id)):
             await query.edit_message_text("❌ You do not have permission to delete this account.")
             return
@@ -457,7 +456,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     elif user_state == 'awaiting_report_comment_and_count':
         try:
-            # New logic to handle space separated input
             parts = user_message.rsplit(' ', 1)
             report_message = parts[0].strip()
             report_count = int(parts[1].strip())
@@ -571,30 +569,22 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 message_id = int(match.group(2))
                 entity = await client.get_entity(channel_name)
                 
-                # Fetching report options from the API directly
-                report_options_res = await client(ReportRequest(peer=entity, id=[message_id], option=None, message=''))
-                
-                if isinstance(report_options_res, ReportResultChooseOption):
-                    report_options_dict = {opt.text: opt.option for opt in report_options_res.options}
-                    report_option_byte = report_options_dict.get(report_type_text)
-                    if report_option_byte:
-                        result = await client(ReportRequest(peer=entity, id=[message_id], option=report_option_byte, message=report_message))
-                    else:
-                        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected for this message. Skipping.")
-                        result = None
+                # Check for `Scam or spam` and its subtypes
+                if report_type_text in context.user_data.get('scam_options_mapping', {}):
+                    report_option_byte = context.user_data['scam_options_mapping'][report_type_text]
                 else:
                     report_option_byte = REPORT_OPTIONS.get(report_type_text)
-                    if report_option_byte:
-                        result = await client(ReportRequest(peer=entity, id=[message_id], option=report_option_byte, message=report_message))
-                    else:
-                        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected. Skipping.")
-                        result = None
 
-                if result:
-                    response_message = f"✅ Report Send {current_report_count}/{total_report_count} task #{task_id}.\n\n"
-                    response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
-                    response_message += f"Original api response: {str(result)}"
-                    await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
+                if report_option_byte is None:
+                    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected. Skipping.")
+                    return
+                
+                result = await client(ReportRequest(peer=entity, id=[message_id], option=report_option_byte, message=report_message))
+
+                response_message = f"✅ Report Send {current_report_count}/{total_report_count} task #{task_id}.\n\n"
+                response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
+                response_message += f"Original api response: {str(result)}"
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
                     
             else:
                 entity = await client.get_entity(target_link)
@@ -770,7 +760,6 @@ async def manage_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     is_user_granted_access = is_granted_user(user_id)
     
-    # Get all accounts if owner or granted all access, otherwise only get user's own accounts
     all_access = is_owner(user_id) or (is_user_granted_access and get_granted_user_info(user_id).get('all_access'))
     accounts = get_logged_in_accounts(user_id, all_access)
 
@@ -798,7 +787,6 @@ async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE, pho
     try:
         if os.path.exists(session_file_path):
             os.remove(session_file_path)
-            # Remove the journal file as well if it exists
             journal_file_path = f"{session_file_path}-journal"
             if os.path.exists(journal_file_path):
                 os.remove(journal_file_path)
@@ -809,7 +797,6 @@ async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE, pho
     except Exception as e:
         await query.edit_message_text(f"❌ An error occurred while deleting the session file: {e}")
 
-    # After deletion, show the updated list of accounts
     await manage_accounts(update, context)
 
 def main() -> None:
