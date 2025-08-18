@@ -157,9 +157,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         keyboard = [
             [InlineKeyboardButton("Login 🔐", callback_data='login_start')],
-            [InlineKeyboardButton("Report Illegal Content 🚨", callback_data='report_start')],
-            [InlineKeyboardButton("My Accounts 👤", callback_data='my_accounts')],
-            [InlineKeyboardButton("My Channels 👥", callback_data='my_channels')]
+            [InlineKeyboardButton("Report Illegal Content 🚨", callback_data='report_start')]
         ]
         text = 'Welcome! You can log in your accounts and start using the bot.'
 
