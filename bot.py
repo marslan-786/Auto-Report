@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from telethon import TelegramClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from telethon.tl.functions.messages import ReportRequest, ReportSpamRequest, ImportChatInviteRequest
+from telethon.tl.functions.messages import ReportRequest, ReportSpamRequest
 from telethon.tl.types import (
     InputPeerChannel, Channel, ReportResultChooseOption, MessageReportOption
 )
@@ -160,10 +160,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             [InlineKeyboardButton("Report Illegal Content 🚨", callback_data='report_start')]
         ]
         text = 'Welcome! You can log in your accounts and start using the bot.'
-
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(text, reply_markup=reply_markup)
-
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -184,7 +182,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         report_type_text = query.data.split('_', 2)[-1]
         context.user_data['report_type_text'] = report_type_text
         
-        # Check if the main report type has subtypes
         if report_type_text in REPORT_SUBTYPES:
             subtype_options = REPORT_SUBTYPES[report_type_text]
             keyboard_buttons = [[InlineKeyboardButton(text=opt, callback_data=f'report_subtype_{opt}')] for opt in subtype_options.keys()]
@@ -245,7 +242,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         ]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(f"Are you sure you want to delete the session for {mask_phone_number(phone_number)}?", reply_markup=reply_markup)
-        
+    
     elif query.data.startswith('delete_account_'):
         parts = query.data.split('_')
         if len(parts) != 4:
@@ -510,21 +507,21 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             
             await update.message.reply_text(f"Starting to report '{target_link}' for you. This is task #{task_id}.")
 
-            if len(accounts_to_use) > 1:
-                report_delay = 5
-            else:
-                report_delay = 10
-
-            tasks = []
+            # --- یہاں لوپ کی تبدیلی کی گئی ہے ---
+            await_tasks = []
             for i in range(report_count):
                 for phone_number, account_user_id in accounts_to_use:
-                    await asyncio.sleep(report_delay)
+                    # 'await' کو لوپ سے باہر لے جائیں تاکہ سب ایک ساتھ شروع ہوں
                     task = asyncio.create_task(send_single_report(update, context, phone_number, target_link, report_type_text, i + 1, report_count, report_message, task_id, user_id, account_user_id))
-                    tasks.append(task)
+                    await_tasks.append(task)
+            
+            # یہاں ایک نیا ٹاسک بنایا گیا ہے جو سارے رپورٹنگ ٹاسکس کو بیک گراؤنڈ میں چلائے گا
+            # اور بوٹ مین تھریڈ کو بلاک نہیں کرے گا
+            report_main_task = asyncio.create_task(report_task_manager(await_tasks, user_id, task_id))
             
             if user_id not in user_tasks:
                 user_tasks[user_id] = {}
-            user_tasks[user_id][task_id] = tasks
+            user_tasks[user_id][task_id] = report_main_task
             
             context.user_data['state'] = None
             
@@ -532,16 +529,23 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await update.message.reply_text("Please provide a comment and a number separated by a space (e.g., 'Violent content 5').")
             context.user_data['state'] = 'awaiting_report_comment_and_count'
 
+# --- نیا فنکشن جو بیک گراؤنڈ میں ٹاسکس کا انتظام کرے گا ---
+async def report_task_manager(tasks_list, user_id, task_id):
+    await asyncio.gather(*tasks_list, return_exceptions=True)
+    if user_id in user_tasks and task_id in user_tasks[user_id]:
+        del user_tasks[user_id][task_id]
+
 async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     try:
         task_id = int(context.args[0])
         
         if user_id in user_tasks and task_id in user_tasks[user_id]:
-            tasks_to_cancel = user_tasks[user_id][task_id]
-            for task in tasks_to_cancel:
-                task.cancel()
+            main_task = user_tasks[user_id][task_id]
+            # مین ٹاسک کو کینسل کرنے سے اس کے اندر کے سب ٹاسک بھی کینسل ہو جائیں گے
+            main_task.cancel()
             await update.message.reply_text(f"✅ The reporting loop with task #{task_id} has been requested to stop.")
+            # ڈکشنری سے ٹاسک ہٹا دیں تاکہ یہ دوبارہ استعمال نہ ہو
             del user_tasks[user_id][task_id]
         else:
             await update.message.reply_text("❌ Task not found. Please provide a valid task number.")
@@ -575,6 +579,8 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
     if phone_number not in session_locks:
         session_locks[phone_number] = asyncio.Lock()
     
+    await asyncio.sleep(random.uniform(5, 15)) # ہر رپورٹ کے درمیان رینڈم وقفہ شامل کیا
+    
     async with session_locks[phone_number]:
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
         session_path = os.path.join(session_folder, phone_number)
@@ -603,10 +609,7 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 message_id = int(match.group(2))
                 entity = await client.get_entity(channel_name)
 
-                # Get the correct report option from the dictionaries
                 report_option_byte = None
-                
-                # Check for subtype options first
                 found_subtype = False
                 for main_type, subtypes in REPORT_SUBTYPES.items():
                     if report_type_text in subtypes:
@@ -614,7 +617,6 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         found_subtype = True
                         break
                 
-                # If not a subtype, check main options
                 if not found_subtype:
                     report_option_byte = REPORT_OPTIONS.get(report_type_text)
 
@@ -733,7 +735,6 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
             if 'client' in locals() and client and client.is_connected():
                 await client.disconnect()
             await context.bot.send_message(chat_id=chat_id, text=f"✅ Channel fetching for account {mask_phone_number(phone_number)} completed.")
-
 
 async def create_full_backup(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
@@ -855,3 +856,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
