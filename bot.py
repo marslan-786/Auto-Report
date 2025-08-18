@@ -139,7 +139,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data['report_type_text'] = report_type_text
             await query.edit_message_text(f"You selected '{report_type_text}'. Now, please provide a brief message explaining the violation and then the number of times to report (e.g., 'Violent content, 5').")
             context.user_data['state'] = 'awaiting_report_comment_and_count'
-    
+
     # Logic only for Owner
     if is_owner(user_id):
         if query.data == 'join_channel':
@@ -147,12 +147,45 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data['state'] = 'awaiting_join_link'
         
         elif query.data == 'my_accounts':
-            accounts = get_logged_in_accounts(user_id, all_access=True)
-            if accounts:
-                account_list = "\n".join([f"- {acc[0]} (User: {acc[1]})" for acc in accounts])
-                await query.edit_message_text(f"Logged in accounts:\n{account_list}")
-            else:
-                await query.edit_message_text("No accounts are currently logged in.")
+            await manage_accounts(update, context)
+
+        elif query.data.startswith('view_account_'):
+            parts = query.data.split('_')
+            if len(parts) != 4:
+                await query.edit_message_text("❌ An error occurred. Please try again.")
+                return
+            
+            phone_number, account_user_id = parts[2], parts[3]
+            keyboard = [[
+                InlineKeyboardButton("Delete Account 🗑️", callback_data=f'confirm_delete_{phone_number}_{account_user_id}'),
+                InlineKeyboardButton("Back ↩️", callback_data='my_accounts')
+            ]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(f"Options for account: {mask_phone_number(phone_number)}", reply_markup=reply_markup)
+            
+        elif query.data.startswith('confirm_delete_'):
+            parts = query.data.split('_')
+            if len(parts) != 4:
+                await query.edit_message_text("❌ An error occurred. Please try again.")
+                return
+            
+            phone_number, account_user_id = parts[2], parts[3]
+            
+            keyboard = [[
+                InlineKeyboardButton("Confirm Delete ⚠️", callback_data=f'delete_account_{phone_number}_{account_user_id}'),
+                InlineKeyboardButton("Cancel ❌", callback_data=f'view_account_{phone_number}_{account_user_id}')
+            ]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(f"Are you sure you want to delete the session for {mask_phone_number(phone_number)}?", reply_markup=reply_markup)
+            
+        elif query.data.startswith('delete_account_'):
+            parts = query.data.split('_')
+            if len(parts) != 4:
+                await query.edit_message_text("❌ An error occurred. Please try again.")
+                return
+            
+            phone_number, account_user_id = parts[2], parts[3]
+            await delete_account(update, context, phone_number, account_user_id)
 
         elif query.data == 'my_channels':
             accounts = get_logged_in_accounts(user_id, all_access=True)
@@ -670,6 +703,44 @@ async def delete_access(query: Update.callback_query, context: ContextTypes.DEFA
         await context.bot.send_message(chat_id=chat_id, text=f"User {user_to_delete} not found in granted list.")
     
     await list_granted_users(query, context)
+
+async def manage_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = update.effective_user.id
+    accounts = get_logged_in_accounts(user_id, all_access=True)
+
+    if not accounts:
+        await query.edit_message_text("No accounts are currently logged in.")
+        return
+
+    keyboard = []
+    for phone_number, account_user_id in accounts:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"{mask_phone_number(phone_number)} (User: {account_user_id})",
+                callback_data=f'view_account_{phone_number}_{account_user_id}'
+            )
+        ])
+    keyboard.append([InlineKeyboardButton("Back ↩️", callback_data='start')])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text("Please select an account to manage:", reply_markup=reply_markup)
+
+async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number: str, account_user_id: str):
+    query = update.callback_query
+    session_file_path = os.path.join(SESSION_FOLDER, account_user_id, f'{phone_number}.session')
+    
+    try:
+        if os.path.exists(session_file_path):
+            os.remove(session_file_path)
+            await query.edit_message_text(f"✅ Session file for {mask_phone_number(phone_number)} has been deleted.")
+        else:
+            await query.edit_message_text(f"❌ Session file for {mask_phone_number(phone_number)} not found.")
+    except Exception as e:
+        await query.edit_message_text(f"❌ An error occurred while deleting the session file: {e}")
+
+    # After deletion, show the updated list of accounts
+    await manage_accounts(update, context)
 
 def main() -> None:
     application = Application.builder().token(BOT_TOKEN).build()
