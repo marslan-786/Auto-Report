@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from telethon import TelegramClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from telethon.tl.functions.messages import ReportRequest, ReportSpamRequest
+from telethon.tl.functions.messages import ReportRequest, ReportSpamRequest, ImportChatInviteRequest
 from telethon.tl.types import (
     InputPeerChannel, Channel, ReportResultChooseOption, MessageReportOption
 )
@@ -501,22 +501,25 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await update.message.reply_text("No accounts logged in to send reports.")
                 context.user_data['state'] = None
                 return
+            
+            # لوپ کو غیر متزامن بنانے اور ڈیلے شامل کرنے کے لیے نیا کوڈ
+            delay_per_report = 5  # Default delay for multiple accounts
+            if len(accounts_to_use) == 1:
+                delay_per_report = 10 # 10 second delay for a single account
 
             task_counter += 1
             task_id = task_counter
             
             await update.message.reply_text(f"Starting to report '{target_link}' for you. This is task #{task_id}.")
 
-            # --- یہاں لوپ کی تبدیلی کی گئی ہے ---
             await_tasks = []
             for i in range(report_count):
                 for phone_number, account_user_id in accounts_to_use:
-                    # 'await' کو لوپ سے باہر لے جائیں تاکہ سب ایک ساتھ شروع ہوں
+                    # اس جگہ پر ڈیلے شامل کیا گیا ہے
+                    await asyncio.sleep(delay_per_report)
                     task = asyncio.create_task(send_single_report(update, context, phone_number, target_link, report_type_text, i + 1, report_count, report_message, task_id, user_id, account_user_id))
                     await_tasks.append(task)
             
-            # یہاں ایک نیا ٹاسک بنایا گیا ہے جو سارے رپورٹنگ ٹاسکس کو بیک گراؤنڈ میں چلائے گا
-            # اور بوٹ مین تھریڈ کو بلاک نہیں کرے گا
             report_main_task = asyncio.create_task(report_task_manager(await_tasks, user_id, task_id))
             
             if user_id not in user_tasks:
@@ -579,7 +582,7 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
     if phone_number not in session_locks:
         session_locks[phone_number] = asyncio.Lock()
     
-    await asyncio.sleep(random.uniform(5, 15)) # ہر رپورٹ کے درمیان رینڈم وقفہ شامل کیا
+    # await asyncio.sleep(random.uniform(5, 15)) # یہ والی لائن اب غیر ضروری ہے، کیونکہ ڈیلے مین لوپ میں ہے
     
     async with session_locks[phone_number]:
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
@@ -856,4 +859,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
