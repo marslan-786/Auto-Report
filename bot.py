@@ -640,7 +640,7 @@ async def send_single_email_report(update: Update, context: ContextTypes.DEFAULT
     
     sender_email = account['email']
     sender_password = account['password']
-    receiver_email = "marslansalfias@gmail.com"
+    receiver_email = "abuse@telegram.org"
     
     # Simple logic to determine SMTP server based on email provider
     smtp_server = None
