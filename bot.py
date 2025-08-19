@@ -6,7 +6,7 @@ import io
 import json
 from datetime import datetime, timedelta
 from telethon import TelegramClient
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telethon.tl.functions.messages import ReportRequest, ReportSpamRequest, ImportChatInviteRequest
 from telethon.tl.types import (
@@ -19,6 +19,7 @@ import sqlite3
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.image import MIMEImage
 
 # --- OWNER DETAILS & BOT CONFIGURATION ---
 # Replace with your own Telegram Chat ID and Username
@@ -26,12 +27,12 @@ OWNER_ID = 8167904992  # Replace with your actual Telegram Chat ID
 OWNER_USERNAME = "whatsapp_offcial"  # Replace with your actual Telegram Username
 
 API_ID = 94575
-API_HASH = 'a3406de8d171bb422bb6ddf3bbd800e3'
+API_HASH = 'a3406de8d171bb422bb6ddf3bbd800e9'
 BOT_TOKEN = '8324191756:AAF28XJJ9wSO2jZ5iFIqlrdEbjqHFX190Pk'
 
 SESSION_FOLDER = 'sessions'
 GRANTED_USERS_FILE = 'granted_users.json'
-EMAIL_LIST_FILE = 'email.txt'
+EMAIL_LIST_FILE = 'email_list.txt'
 
 # Mapping for main report types
 REPORT_OPTIONS = {
@@ -146,6 +147,8 @@ def get_email_server(email):
         return 'smtp-mail.outlook.com', 587
     return None, None
 
+# --- Handlers for Telegram Bot ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     text = ''
@@ -221,14 +224,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.edit_message_text(f"Please choose a specific reason for '{report_type_text}':", reply_markup=reply_markup)
             context.user_data['state'] = 'awaiting_report_type_selection'
         else:
-            await query.edit_message_text(f"You selected '{report_type_text}'. Now, please provide a brief message and the number of times to report (e.g., 'Violent content 5').")
-            context.user_data['state'] = 'awaiting_report_comment_and_count'
+            if context.user_data.get('report_method') == 'email':
+                await query.edit_message_text(f"You selected '{report_type_text}'. Now, please send the screenshot of the content you want to report.\n\nAfter sending the screenshot, provide a brief message and the number of times to report (e.g., 'Violent content 5').")
+                context.user_data['state'] = 'awaiting_photo_or_comment'
+            else:
+                await query.edit_message_text(f"You selected '{report_type_text}'. Now, please provide a brief message and the number of times to report (e.g., 'Violent content 5').")
+                context.user_data['state'] = 'awaiting_report_comment_and_count'
             
     elif query.data.startswith('report_subtype_'):
         report_subtype_text = query.data.split('_', 2)[-1]
         context.user_data['report_type_text'] = report_subtype_text
-        await query.edit_message_text(f"You selected '{report_subtype_text}'. Now, please provide a brief message and the number of times to report (e.g., 'Violent content 5').")
-        context.user_data['state'] = 'awaiting_report_comment_and_count'
+        if context.user_data.get('report_method') == 'email':
+            await query.edit_message_text(f"You selected '{report_subtype_text}'. Now, please send the screenshot of the content you want to report.\n\nAfter sending the screenshot, provide a brief message and the number of times to report (e.g., 'Violent content 5').")
+            context.user_data['state'] = 'awaiting_photo_or_comment'
+        else:
+            await query.edit_message_text(f"You selected '{report_subtype_text}'. Now, please provide a brief message and the number of times to report (e.g., 'Violent content 5').")
+            context.user_data['state'] = 'awaiting_report_comment_and_count'
 
     elif query.data == 'my_accounts':
         user_info = get_granted_user_info(user_id)
@@ -449,17 +460,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await update.message.reply_text("Invalid duration format. Please provide a duration (e.g., '1h', '2d').")
                 context.user_data['state'] = 'awaiting_reset_info'
 
-        elif user_state == 'awaiting_join_link':
-            invite_link = user_message
-            accounts = get_logged_in_accounts(user_id, all_access=True)
-            if not accounts:
-                await update.message.reply_text("No accounts logged in to join channels.")
-                return
-
-            task = asyncio.create_task(join_channels_in_background(update, context, invite_link, accounts))
-            await update.message.reply_text("All join requests have been sent. They are now processing in the background.")
-            context.user_data['state'] = None
-
     # --- All Users States ---
     if user_state == 'awaiting_phone_number':
         phone_number = user_message
@@ -517,9 +517,22 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         reply_markup = InlineKeyboardMarkup(keyboard_buttons)
         await update.message.reply_text("Please choose a report type:", reply_markup=reply_markup)
         context.user_data['state'] = 'awaiting_report_type_selection'
-
+    
+    elif user_state == 'awaiting_photo_or_comment':
+        if update.message.photo:
+            photo_file_id = update.message.photo[-1].file_id
+            context.user_data['photo_file_id'] = photo_file_id
+            await update.message.reply_text("Photo received. Now, please provide a brief message and the number of times to report (e.g., 'Violent content 5').")
+            context.user_data['state'] = 'awaiting_report_comment_and_count'
+            return # Wait for the next message
+        
+        # If the user did not send a photo but sent text
+        await update.message.reply_text("You have to send a screenshot first. If you want to continue without a screenshot, just send your report message and count now.")
+        context.user_data['state'] = 'awaiting_report_comment_and_count'
+    
     elif user_state == 'awaiting_report_comment_and_count':
         try:
+            user_message = update.message.text
             parts = user_message.rsplit(' ', 1)
             report_message = parts[0].strip()
             report_count = int(parts[1].strip())
@@ -527,6 +540,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             target_link = context.user_data.get('target_link')
             report_type_text = context.user_data.get('report_type_text')
             report_method = context.user_data.get('report_method')
+            
+            attachment = context.user_data.get('photo_file_id')
 
             task_counter += 1
             task_id = task_counter
@@ -551,13 +566,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     return
                 
                 await update.message.reply_text(f"Starting to report '{target_link}' via email. This is task #{task_id}. It will run in the background.")
-                report_main_task = asyncio.create_task(start_email_reporting_process(update, context, email_accounts, target_link, report_type_text, report_count, report_message, task_id, user_id))
+                report_main_task = asyncio.create_task(start_email_reporting_process(update, context, email_accounts, target_link, report_type_text, report_count, report_message, task_id, user_id, attachment))
             
             if user_id not in user_tasks:
                 user_tasks[user_id] = {}
             user_tasks[user_id][task_id] = report_main_task
             
             context.user_data['state'] = None
+            context.user_data.pop('photo_file_id', None)
             
         except (ValueError, IndexError):
             await update.message.reply_text("Please provide a comment and a number separated by a space (e.g., 'Violent content 5').")
@@ -583,7 +599,7 @@ async def start_reporting_process(update, context, accounts_to_use, target_link,
     
     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Reporting task #{task_id} has been completed.")
 
-async def start_email_reporting_process(update, context, email_accounts, target_link, report_type_text, report_count, report_message, task_id, user_id):
+async def start_email_reporting_process(update, context, email_accounts, target_link, report_type_text, report_count, report_message, task_id, user_id, attachment):
     
     delay_per_report = 5
 
@@ -591,7 +607,7 @@ async def start_email_reporting_process(update, context, email_accounts, target_
     for i in range(report_count):
         for account in email_accounts:
             await asyncio.sleep(delay_per_report)
-            task = asyncio.create_task(send_single_email_report(update, context, account, target_link, report_type_text, i + 1, report_count, report_message, task_id))
+            task = asyncio.create_task(send_single_email_report(update, context, account, target_link, report_type_text, i + 1, report_count, report_message, task_id, attachment))
             await_tasks.append(task)
             
     await asyncio.gather(*await_tasks, return_exceptions=True)
@@ -620,7 +636,7 @@ async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # --- Helper Functions ---
 
-async def send_single_email_report(update: Update, context: ContextTypes.DEFAULT_TYPE, account: dict, target_link, report_type_text, current_report_count, total_report_count, report_message, task_id):
+async def send_single_email_report(update: Update, context: ContextTypes.DEFAULT_TYPE, account: dict, target_link, report_type_text, current_report_count, total_report_count, report_message, task_id, attachment):
     
     sender_email = account['email']
     sender_password = account['password']
@@ -635,13 +651,10 @@ async def send_single_email_report(update: Update, context: ContextTypes.DEFAULT
     body = f"""
 Dear Telegram Abuse Team,
 
-I am writing to report a serious violation of Telegram's Terms of Service and a crime that is causing significant financial harm to many users. The channel and/or post linked below is involved in illegal activities, specifically selling stolen credit card information.
+I am writing to report a serious violation of Telegram's Terms of Service. The channel and/or post linked below is involved in illegal activities.
 
 **Channel/Post Link:**
 {target_link}
-
-**Violation Details:**
-The channel is selling stolen credit card data, with thousands of cards available at very low prices (e.g., $100 balance cards sold for $5). This is a clear case of illegal goods and fraud.
 
 **Report Category:**
 {report_type_text}
@@ -649,7 +662,7 @@ The channel is selling stolen credit card data, with thousands of cards availabl
 **Additional Details:**
 {report_message}
 
-I kindly request that you take immediate and serious action against this channel by deleting the illegal posts and banning the channel to prevent further damage to users.
+I kindly request that you take immediate action to remove this content and ban the channel to prevent further damage.
 
 Thank you for your prompt attention to this matter.
 
@@ -664,6 +677,15 @@ A concerned user
         msg['To'] = receiver_email
         msg['Subject'] = subject
         msg.attach(MIMEText(body, 'plain'))
+
+        # Add the image attachment if provided
+        if attachment:
+            file = await context.bot.get_file(attachment)
+            photo_data = await file.download_as_bytes()
+            
+            image = MIMEImage(photo_data, name='screenshot.png')
+            image.add_header('Content-Disposition', 'attachment', filename='screenshot.png')
+            msg.attach(image)
 
         with smtplib.SMTP(smtp_server, smtp_port) as server:
             server.starttls()
@@ -707,23 +729,23 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
         session_path = os.path.join(session_folder, phone_number)
         
+        if not os.path.exists(session_folder):
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session folder not found. Skipping.")
+            return
+
+        if not os.path.exists(session_path + '.session'):
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session file not found. Skipping.")
+            return
+
+        client = TelegramClient(session_path, API_ID, API_HASH)
+        await client.connect()
+        
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Account {mask_phone_number(phone_number)} is not authorized. Skipping reports for task #{task_id}.")
+            return
+        
         try:
-            if not os.path.exists(session_path + '.session'):
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session folder not found. Skipping.")
-                return
-
-            if not os.path.exists(session_path + '.session'):
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session file not found. Skipping.")
-                return
-
-            client = TelegramClient(session_path, API_ID, API_HASH)
-            await client.connect()
-
-            if not await client.is_user_authorized():
-                await client.disconnect()
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Account {mask_phone_number(phone_number)} is not authorized. Skipping reports for task #{task_id}.")
-                return
-
             match = re.search(r't\.me/([^/]+)/(\d+)', target_link)
             
             if match:
@@ -972,9 +994,10 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("stop", stop_command_handler))
     application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO & ~filters.COMMAND, message_handler))
     
     application.run_polling()
 
 if __name__ == '__main__':
     main()
+
