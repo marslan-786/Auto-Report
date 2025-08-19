@@ -32,7 +32,7 @@ BOT_TOKEN = '8324191756:AAF28XJJ9wSO2jZ5iFIqlrdEbjqHFX190Pk'
 
 SESSION_FOLDER = 'sessions'
 GRANTED_USERS_FILE = 'granted_users.json'
-EMAIL_LIST_FILE = 'email_list.txt'
+EMAIL_LIST_FILE = 'email.txt'
 
 # Mapping for main report types
 REPORT_OPTIONS = {
