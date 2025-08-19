@@ -16,6 +16,9 @@ from telethon.errors import RPCError, FloodWaitError
 import traceback
 import random
 import sqlite3
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # --- OWNER DETAILS & BOT CONFIGURATION ---
 # Replace with your own Telegram Chat ID and Username
@@ -23,11 +26,12 @@ OWNER_ID = 8167904992  # Replace with your actual Telegram Chat ID
 OWNER_USERNAME = "whatsapp_offcial"  # Replace with your actual Telegram Username
 
 API_ID = 94575
-API_HASH = 'a3406de8d171bb422bb6ddf3bbd800e2'
+API_HASH = 'a3406de8d171bb422bb6ddf3bbd800e3'
 BOT_TOKEN = '8324191756:AAF28XJJ9wSO2jZ5iFIqlrdEbjqHFX190Pk'
 
 SESSION_FOLDER = 'sessions'
 GRANTED_USERS_FILE = 'granted_users.json'
+EMAIL_LIST_FILE = 'email.txt'
 
 # Mapping for main report types
 REPORT_OPTIONS = {
@@ -83,6 +87,9 @@ if not os.path.exists(SESSION_FOLDER):
 if not os.path.exists(GRANTED_USERS_FILE):
     with open(GRANTED_USERS_FILE, 'w') as f:
         json.dump([], f)
+if not os.path.exists(EMAIL_LIST_FILE):
+    with open(EMAIL_LIST_FILE, 'w') as f:
+        f.write('')
 
 def load_granted_users():
     if not os.path.exists(GRANTED_USERS_FILE):
@@ -96,6 +103,19 @@ def load_granted_users():
 def save_granted_users(users):
     with open(GRANTED_USERS_FILE, 'w') as f:
         json.dump(users, f, indent=4)
+
+def load_email_accounts():
+    accounts = []
+    if not os.path.exists(EMAIL_LIST_FILE):
+        return accounts
+    with open(EMAIL_LIST_FILE, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line or ':' not in line:
+                continue
+            email, password = line.split(':', 1)
+            accounts.append({'email': email, 'password': password})
+    return accounts
 
 def get_granted_user_info(user_id):
     granted_users = load_granted_users()
@@ -113,15 +133,18 @@ def is_granted_user(user_id):
     return get_granted_user_info(user_id) is not None
 
 def mask_phone_number(phone_number):
-    """
-    Masks the middle of a phone number for privacy.
-    Example: +923117822922 -> +92311***22922
-    """
     if len(phone_number) < 8:
         return phone_number
     return phone_number[:5] + '***' + phone_number[-5:]
 
-# --- Handlers for Telegram Bot ---
+def get_email_server(email):
+    if '@gmail.com' in email:
+        return 'smtp.gmail.com', 587
+    elif '@yahoo.com' in email:
+        return 'smtp.mail.yahoo.com', 587
+    elif '@outlook.com' in email or '@hotmail.com' in email:
+        return 'smtp-mail.outlook.com', 587
+    return None, None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -137,6 +160,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             [InlineKeyboardButton("Login 🔐", callback_data='login_start')],
             [InlineKeyboardButton("Join Channel ➕", callback_data='join_channel')],
             [InlineKeyboardButton("Report Illegal Content 🚨", callback_data='report_start')],
+            [InlineKeyboardButton("Report via Email 📧", callback_data='report_email_start')],
             [InlineKeyboardButton("My Accounts 👤", callback_data='my_accounts')],
             [InlineKeyboardButton("My Channels 👥", callback_data='my_channels')],
             [InlineKeyboardButton("Backup 💾", callback_data='backup_sessions')],
@@ -148,6 +172,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         keyboard = [
             [InlineKeyboardButton("Login 🔐", callback_data='login_start')],
             [InlineKeyboardButton("Report Illegal Content 🚨", callback_data='report_start')],
+            [InlineKeyboardButton("Report via Email 📧", callback_data='report_email_start')],
         ]
         if not all_access:
             keyboard.append([InlineKeyboardButton("My Accounts 👤", callback_data='my_accounts')])
@@ -157,7 +182,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         keyboard = [
             [InlineKeyboardButton("Login 🔐", callback_data='login_start')],
-            [InlineKeyboardButton("Report Illegal Content 🚨", callback_data='report_start')]
+            [InlineKeyboardButton("Report Illegal Content 🚨", callback_data='report_start')],
+            [InlineKeyboardButton("Report via Email 📧", callback_data='report_email_start')],
         ]
         text = 'Welcome! You can log in your accounts and start using the bot.'
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -177,6 +203,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif query.data == 'report_start':
         await query.edit_message_text(text="Please send the link of the channel or a post you want to report.")
         context.user_data['state'] = 'awaiting_link'
+        context.user_data['report_method'] = 'session'
+
+    elif query.data == 'report_email_start':
+        await query.edit_message_text(text="Please send the link of the channel or a post you want to report.")
+        context.user_data['state'] = 'awaiting_link'
+        context.user_data['report_method'] = 'email'
 
     elif query.data.startswith('report_type_'):
         report_type_text = query.data.split('_', 2)[-1]
@@ -443,6 +475,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 context.user_data['state'] = None
                 return
 
+
             client = TelegramClient(session_path, API_ID, API_HASH)
             await client.connect()
             if not await client.is_user_authorized():
@@ -493,22 +526,32 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             
             target_link = context.user_data.get('target_link')
             report_type_text = context.user_data.get('report_type_text')
+            report_method = context.user_data.get('report_method')
 
-            user_info = get_granted_user_info(user_id)
-            accounts_to_use = get_logged_in_accounts(user_id, is_owner(user_id) or (user_info and user_info.get('all_access')))
-            
-            if not accounts_to_use:
-                await update.message.reply_text("No accounts logged in to send reports.")
-                context.user_data['state'] = None
-                return
-            
             task_counter += 1
             task_id = task_counter
-            
-            await update.message.reply_text(f"Starting to report '{target_link}' for you. This is task #{task_id}. It will run in the background.")
 
-            # یہاں سے رپورٹنگ کا پورا عمل ایک نئے ٹاسک میں بھیجا جا رہا ہے
-            report_main_task = asyncio.create_task(start_reporting_process(update, context, accounts_to_use, target_link, report_type_text, report_count, report_message, task_id, user_id))
+            if report_method == 'session':
+                user_info = get_granted_user_info(user_id)
+                accounts_to_use = get_logged_in_accounts(user_id, is_owner(user_id) or (user_info and user_info.get('all_access')))
+                
+                if not accounts_to_use:
+                    await update.message.reply_text("No accounts logged in to send reports.")
+                    context.user_data['state'] = None
+                    return
+                
+                await update.message.reply_text(f"Starting to report '{target_link}' for you. This is task #{task_id}. It will run in the background.")
+                report_main_task = asyncio.create_task(start_reporting_process(update, context, accounts_to_use, target_link, report_type_text, report_count, report_message, task_id, user_id))
+            
+            elif report_method == 'email':
+                email_accounts = load_email_accounts()
+                if not email_accounts:
+                    await update.message.reply_text("No email accounts found in `email_list.txt`. Please add accounts and try again.")
+                    context.user_data['state'] = None
+                    return
+                
+                await update.message.reply_text(f"Starting to report '{target_link}' via email. This is task #{task_id}. It will run in the background.")
+                report_main_task = asyncio.create_task(start_email_reporting_process(update, context, email_accounts, target_link, report_type_text, report_count, report_message, task_id, user_id))
             
             if user_id not in user_tasks:
                 user_tasks[user_id] = {}
@@ -520,7 +563,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await update.message.reply_text("Please provide a comment and a number separated by a space (e.g., 'Violent content 5').")
             context.user_data['state'] = 'awaiting_report_comment_and_count'
 
-# --- نیا فنکشن جو بیک گراؤنڈ میں تمام رپورٹنگ کا انتظام کرے گا ---
 async def start_reporting_process(update, context, accounts_to_use, target_link, report_type_text, report_count, report_message, task_id, user_id):
     
     delay_per_report = 5
@@ -530,7 +572,6 @@ async def start_reporting_process(update, context, accounts_to_use, target_link,
     await_tasks = []
     for i in range(report_count):
         for phone_number, account_user_id in accounts_to_use:
-            # اب یہاں پر ڈیلے ہے، لیکن یہ مین تھریڈ کو بلاک نہیں کرے گا
             await asyncio.sleep(delay_per_report)
             task = asyncio.create_task(send_single_report(update, context, phone_number, target_link, report_type_text, i + 1, report_count, report_message, task_id, user_id, account_user_id))
             await_tasks.append(task)
@@ -542,6 +583,23 @@ async def start_reporting_process(update, context, accounts_to_use, target_link,
     
     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Reporting task #{task_id} has been completed.")
 
+async def start_email_reporting_process(update, context, email_accounts, target_link, report_type_text, report_count, report_message, task_id, user_id):
+    
+    delay_per_report = 5
+
+    await_tasks = []
+    for i in range(report_count):
+        for account in email_accounts:
+            await asyncio.sleep(delay_per_report)
+            task = asyncio.create_task(send_single_email_report(update, context, account, target_link, report_type_text, i + 1, report_count, report_message, task_id))
+            await_tasks.append(task)
+            
+    await asyncio.gather(*await_tasks, return_exceptions=True)
+    
+    if user_id in user_tasks and task_id in user_tasks[user_id]:
+        del user_tasks[user_id][task_id]
+    
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Email reporting task #{task_id} has been completed.")
 
 async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -550,10 +608,8 @@ async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         
         if user_id in user_tasks and task_id in user_tasks[user_id]:
             main_task = user_tasks[user_id][task_id]
-            # مین ٹاسک کو کینسل کرنے سے اس کے اندر کے سب ٹاسک بھی کینسل ہو جائیں گے
             main_task.cancel()
             await update.message.reply_text(f"✅ The reporting loop with task #{task_id} has been requested to stop.")
-            # ڈکشنری سے ٹاسک ہٹا دیں تاکہ یہ دوبارہ استعمال نہ ہو
             del user_tasks[user_id][task_id]
         else:
             await update.message.reply_text("❌ Task not found. Please provide a valid task number.")
@@ -563,6 +619,66 @@ async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text(f"An error occurred while stopping the task: {e}")
 
 # --- Helper Functions ---
+
+async def send_single_email_report(update: Update, context: ContextTypes.DEFAULT_TYPE, account: dict, target_link, report_type_text, current_report_count, total_report_count, report_message, task_id):
+    
+    sender_email = account['email']
+    sender_password = account['password']
+    receiver_email = "abuse@telegram.org"
+    smtp_server, smtp_port = get_email_server(sender_email)
+
+    if not smtp_server:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Failed to send report from {sender_email}. Unknown email provider.")
+        return
+
+    subject = f"Urgent Report: Illegal Activity on Telegram - {report_type_text}"
+    body = f"""
+Dear Telegram Abuse Team,
+
+I am writing to report a serious violation of Telegram's Terms of Service and a crime that is causing significant financial harm to many users. The channel and/or post linked below is involved in illegal activities, specifically selling stolen credit card information.
+
+**Channel/Post Link:**
+{target_link}
+
+**Violation Details:**
+The channel is selling stolen credit card data, with thousands of cards available at very low prices (e.g., $100 balance cards sold for $5). This is a clear case of illegal goods and fraud.
+
+**Report Category:**
+{report_type_text}
+
+**Additional Details:**
+{report_message}
+
+I kindly request that you take immediate and serious action against this channel by deleting the illegal posts and banning the channel to prevent further damage to users.
+
+Thank you for your prompt attention to this matter.
+
+Best regards,
+
+A concerned user
+"""
+
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = sender_email
+        msg['To'] = receiver_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, receiver_email, msg.as_string())
+        
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Email Report Send {current_report_count}/{total_report_count} task #{task_id}.\n\nfrom {sender_email} sent successfully.")
+    
+    except smtplib.SMTPAuthenticationError as e:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Email report {current_report_count}/{total_report_count} from {sender_email} failed. **Authentication Error.** Please check your password or App Password and try again. Error: {e}")
+    except smtplib.SMTPException as e:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Email report {current_report_count}/{total_report_count} from {sender_email} failed. **SMTP Error.** Please check your internet connection or email provider settings. Error: {e}")
+    except Exception as e:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Email report {current_report_count}/{total_report_count} from {sender_email} failed. **Reason:** {e}")
+        print(traceback.format_exc())
 
 def get_logged_in_accounts(user_id, all_access=False):
     accounts = []
@@ -591,23 +707,23 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
         session_path = os.path.join(session_folder, phone_number)
         
-        if not os.path.exists(session_folder):
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session folder not found. Skipping.")
-            return
-
-        if not os.path.exists(session_path + '.session'):
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session file not found. Skipping.")
-            return
-
-        client = TelegramClient(session_path, API_ID, API_HASH)
-        await client.connect()
-        
-        if not await client.is_user_authorized():
-            await client.disconnect()
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Account {mask_phone_number(phone_number)} is not authorized. Skipping reports for task #{task_id}.")
-            return
-        
         try:
+            if not os.path.exists(session_path + '.session'):
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session folder not found. Skipping.")
+                return
+
+            if not os.path.exists(session_path + '.session'):
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session file not found. Skipping.")
+                return
+
+            client = TelegramClient(session_path, API_ID, API_HASH)
+            await client.connect()
+
+            if not await client.is_user_authorized():
+                await client.disconnect()
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Account {mask_phone_number(phone_number)} is not authorized. Skipping reports for task #{task_id}.")
+                return
+
             match = re.search(r't\.me/([^/]+)/(\d+)', target_link)
             
             if match:
