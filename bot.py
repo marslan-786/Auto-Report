@@ -640,9 +640,17 @@ async def send_single_email_report(update: Update, context: ContextTypes.DEFAULT
     
     sender_email = account['email']
     sender_password = account['password']
-    receiver_email = "marslansalfias@gmail.com"
-    smtp_server, smtp_port = get_email_server(sender_email)
-
+    receiver_email = "abuse@telegram.org"
+    
+    # Simple logic to determine SMTP server based on email provider
+    smtp_server = None
+    if '@gmail.com' in sender_email:
+        smtp_server = 'smtp.gmail.com'
+    elif '@yahoo.com' in sender_email:
+        smtp_server = 'smtp.mail.yahoo.com'
+    elif '@outlook.com' in sender_email or '@hotmail.com' in sender_email:
+        smtp_server = 'smtp-mail.outlook.com'
+    
     if not smtp_server:
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Failed to send report from {sender_email}. Unknown email provider.")
         return
@@ -681,13 +689,17 @@ A concerned user
         # Add the image attachment if provided
         if attachment:
             file = await context.bot.get_file(attachment)
-            photo_data = await file.get_bytes()
             
-            image = MIMEImage(photo_data, name='screenshot.png')
+            # This is the correct way to get file bytes for your version
+            photo_data = io.BytesIO()
+            await file.download_to_memory(photo_data)
+            photo_data.seek(0)
+            
+            image = MIMEImage(photo_data.read(), name='screenshot.png')
             image.add_header('Content-Disposition', 'attachment', filename='screenshot.png')
             msg.attach(image)
 
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
+        with smtplib.SMTP(smtp_server, 587) as server:
             server.starttls()
             server.login(sender_email, sender_password)
             server.sendmail(sender_email, receiver_email, msg.as_string())
