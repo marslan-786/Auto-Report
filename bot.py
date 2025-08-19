@@ -681,7 +681,7 @@ A concerned user
         # Add the image attachment if provided
         if attachment:
             file = await context.bot.get_file(attachment)
-            photo_data = await file.download_as_bytes()
+            photo_data = await file.get_bytes()
             
             image = MIMEImage(photo_data, name='screenshot.png')
             image.add_header('Content-Disposition', 'attachment', filename='screenshot.png')
