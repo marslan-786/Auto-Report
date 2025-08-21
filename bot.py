@@ -1348,58 +1348,55 @@ async def main_run() -> None:
     # 1. Initialize Telegram.ext Application
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # 2. Add all your handlers here as you normally would
+    # 2. Add all your handlers here
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("stop", stop_command_handler))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO & ~filters.COMMAND, message_handler))
     # ... Add all your other handlers here ...
 
-    # 3. Create the Telegram bot polling task
-    # This task will run your bot in the background without blocking the main event loop
-    bot_task = asyncio.create_task(application.run_polling())
+    # 3. Telethon client init
+    detection_session_path = os.path.join(SESSION_FOLDER, str(OWNER_ID), DETECTION_SESSION_PHONE)
+    telethon_client = TelegramClient(detection_session_path, API_ID, API_HASH)
 
-    # 4. Initialize and connect the Telethon client
     try:
-        detection_session_path = os.path.join(SESSION_FOLDER, str(OWNER_ID), DETECTION_SESSION_PHONE)
-        telethon_client = TelegramClient(detection_session_path, API_ID, API_HASH)
-        
         await telethon_client.connect()
 
         if not await telethon_client.is_user_authorized():
-            logging.warning(f"Telethon client not authorized for phone {DETECTION_SESSION_PHONE}. Post detection will not work.")
-            await send_owner_error(f"⚠️ **Warning:**\nTelethon client not authorized for `{DETECTION_SESSION_PHONE}`. Please log in this account.")
-            # If the client is not authorized, we only need to run the bot task
-            await bot_task
+            logging.warning(f"Telethon client not authorized for phone {DETECTION_SESSION_PHONE}.")
+            await send_owner_error(
+                f"⚠️ **Warning:**\nTelethon client not authorized for `{DETECTION_SESSION_PHONE}`. Please log in this account."
+            )
+            # Run only bot if Telethon not ready
+            await application.run_polling()
             return
 
-        # 5. Add your Telethon event handlers here
-        @telethon_client.on(events.NewMessage(chats=...)) # Replace with your channel IDs
+        # 4. Add Telethon handlers
+        @telethon_client.on(events.NewMessage(chats=...))  # Replace ... with your channel IDs
         async def handle_new_message(event):
             # Your post detection logic here
             pass
-        
-        # 6. Create the Telethon client task
-        # This task will run your Telethon client in the background
-        telethon_task = asyncio.create_task(telethon_client.run_until_disconnected())
-        
-        # 7. Use asyncio.gather() to run both tasks concurrently
-        # This is the key to solving your problem!
-        logging.info("Both Telegram bot and Telethon client are starting...")
-        await asyncio.gather(bot_task, telethon_task)
-    
+
+        # 5. Run bot + telethon together
+        logging.info("Starting both Bot + Telethon...")
+        await asyncio.gather(
+            application.run_polling(),   # ✅ async mode
+            telethon_client.run_until_disconnected()
+        )
+
     except SessionPasswordNeededError:
         logging.error("Two-factor authentication is enabled on the Telethon account.")
-        await send_owner_error(f"❌ **Error:**\nTwo-factor authentication is enabled on the detection account `{DETECTION_SESSION_PHONE}`. Please log in again and provide the password.")
-        # If Telethon fails, we still want the bot to run
-        await bot_task
+        await send_owner_error(
+            f"❌ **Error:**\nTwo-factor authentication is enabled on `{DETECTION_SESSION_PHONE}`. Please log in again."
+        )
+        await application.run_polling()  # Run bot only
     except Exception as e:
         logging.error(f"Failed to start Telethon client: {e}")
-        await send_owner_error(f"❌ **Critical Error:**\nFailed to connect Telethon client. Post detection will not work.\n\n**Error Details:**\n`{type(e).__name__}: {str(e)}`")
-        # If Telethon fails, we still want the bot to run
-        await bot_task
+        await send_owner_error(
+            f"❌ **Critical Error:**\nFailed to connect Telethon client.\n\n**Error:** `{type(e).__name__}: {str(e)}`"
+        )
+        await application.run_polling()  # Run bot only
 
-# The main entry point of the script (at the end of your bot.py file)
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     asyncio.run(main_run())
-
