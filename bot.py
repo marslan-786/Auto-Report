@@ -13,8 +13,10 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from telethon.tl.functions.messages import ReportRequest, ReportSpamRequest, ImportChatInviteRequest, GetDialogsRequest
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import (
-    InputPeerChannel, Channel, ReportResultChooseOption, MessageReportOption, ReportReason
+    InputPeerChannel, Channel, ReportResultChooseOption, MessageReportOption
 )
+from telethon.tl.types.messages import ReportReason # Changed line
+
 from telethon.errors import RPCError, FloodWaitError, UserAlreadyParticipantError, SessionPasswordNeededError
 import traceback
 import random
