@@ -17,7 +17,7 @@ from telethon.tl.types import (
     InputReportReasonChildAbuse, InputReportReasonCopyright, InputReportReasonFake,
     InputReportReasonGeoIrrelevant, InputReportReasonIllegalDrugs, InputReportReasonOther,
     InputReportReasonPersonalDetails, InputReportReasonPornography, InputReportReasonSpam,
-    InputReportReasonViolence, InputReportReasonUnwanted
+    InputReportReasonViolence
 )
 from telethon.errors import RPCError, FloodWaitError, UserAlreadyParticipantError, SessionPasswordNeededError
 import traceback
@@ -54,8 +54,8 @@ REPORT_REASONS = {
     'Terrorism': InputReportReasonViolence(), # Using a similar category
     'Copyright': InputReportReasonCopyright(),
     'Other': InputReportReasonOther(),
-    'I don’t like it': InputReportReasonUnwanted(),
-    'It’s not illegal, but must be taken down': InputReportReasonUnwanted(),
+    'I don’t like it': InputReportReasonOther(), # Changed from InputReportReasonUnwanted()
+    'It’s not illegal, but must be taken down': InputReportReasonOther(), # Changed from InputReportReasonUnwanted()
     'Phishing': InputReportReasonSpam(),
     'Impersonation': InputReportReasonFake(),
     'Fraudulent sales': InputReportReasonSpam(),
@@ -245,16 +245,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
         # Mapping for main report types
         REPORT_OPTIONS = {
-            'Scam or spam',
-            'Violence',
-            'Child abuse',
-            'Illegal goods',
-            'Illegal adult content',
-            'Personal data',
-            'Terrorism',
-            'Copyright',
-            'Other',
-            'I don’t like it',
+            'Scam or spam', 'Violence', 'Child abuse', 'Illegal goods', 'Illegal adult content', 
+            'Personal data', 'Terrorism', 'Copyright', 'Other', 'I don’t like it', 
             'It’s not illegal, but must be taken down'
         }
         
