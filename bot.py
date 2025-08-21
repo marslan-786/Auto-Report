@@ -13,10 +13,12 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from telethon.tl.functions.messages import ReportRequest, ReportSpamRequest, ImportChatInviteRequest, GetDialogsRequest
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import (
-    InputPeerChannel, Channel, ReportResultChooseOption, MessageReportOption
+    InputPeerChannel, Channel, ReportResultChooseOption, MessageReportOption,
+    InputReportReasonChildAbuse, InputReportReasonCopyright, InputReportReasonFake,
+    InputReportReasonGeoIrrelevant, InputReportReasonIllegalDrugs, InputReportReasonOther,
+    InputReportReasonPersonalDetails, InputReportReasonPornography, InputReportReasonSpam,
+    InputReportReasonViolence, InputReportReasonUnwanted
 )
-from telethon.tl.types.messages import ReportReason # Changed line
-
 from telethon.errors import RPCError, FloodWaitError, UserAlreadyParticipantError, SessionPasswordNeededError
 import traceback
 import random
@@ -30,8 +32,8 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # --- OWNER DETAILS & BOT CONFIGURATION ---
-OWNER_ID = 8167904992  # Replace with your actual Telegram Chat ID
-OWNER_USERNAME = "whatsapp_offcial"  # Replace with your actual Telegram Username
+OWNER_ID = 8167904992 # Replace with your actual Telegram Chat ID
+OWNER_USERNAME = "whatsapp_offcial" # Replace with your actual Telegram Username
 
 API_ID = 94575
 API_HASH = 'a3406de8d171bb422bb6ddf3bbd800e9'
@@ -41,87 +43,43 @@ SESSION_FOLDER = 'sessions'
 GRANTED_USERS_FILE = 'granted_users.json'
 EMAIL_LIST_FILE = 'email.txt'
 
-# Mapping for main report types
-REPORT_OPTIONS = {
-    'Scam or spam': b'8',
-    'Violence': b'3',
-    'Child abuse': b'2',
-    'Illegal goods': b'4',
-    'Illegal adult content': b'5',
-    'Personal data': b'6',
-    'Terrorism': b'7',
-    'Copyright': b'9',
-    'Other': b'a',
-    'I don’t like it': b'1',
-    'It’s not illegal, but must be taken down': b'b'
-}
-
-# Mapping for specific report subtypes
-REPORT_SUBTYPES = {
-    'Scam or spam': {
-        'Phishing': b'81',
-        'Impersonation': b'82',
-        'Fraudulent sales': b'83',
-        'Spam': b'84'
-    },
-    'Illegal goods': {
-        'Weapons': b'41',
-        'Drugs': b'42',
-        'Fake documents': b'43',
-        'Counterfeit money': b'44',
-        'Other goods': b'45'
-    },
-    'Illegal adult content': {
-        'Nudity': b'51',
-        'Sexual abuse': b'52',
-        'Child sexual abuse material': b'53',
-        'Other adult content': b'54'
-    },
-    'Personal data': {
-        'Identity theft': b'61',
-        'Leaked phone number': b'62',
-        'Leaked address': b'63',
-        'Other personal data': b'64'
-    }
-}
-
-# --- NEW: Mapping human-readable strings to Telegram's ReportReason types ---
+# --- NEW: Mapping human-readable strings to Telegram's InputReportReason types ---
 REPORT_REASONS = {
-    'Scam or spam': ReportReason.spam,
-    'Violence': ReportReason.violence,
-    'Child abuse': ReportReason.childAbuse,
-    'Illegal goods': ReportReason.illegalDrugs,  # Adjusted to closest match
-    'Illegal adult content': ReportReason.pornography,
-    'Personal data': ReportReason.privateData,
-    'Terrorism': ReportReason.terrorism,
-    'Copyright': ReportReason.copyright,
-    'Other': ReportReason.other,
-    'I don’t like it': ReportReason.unwanted,
-    'It’s not illegal, but must be taken down': ReportReason.unwanted, # Adjusted to closest match
-    'Phishing': ReportReason.spam,
-    'Impersonation': ReportReason.fakeAccount,
-    'Fraudulent sales': ReportReason.spam,
-    'Spam': ReportReason.spam,
-    'Weapons': ReportReason.illegalDrugs,
-    'Drugs': ReportReason.illegalDrugs,
-    'Fake documents': ReportReason.illegalDrugs,
-    'Counterfeit money': ReportReason.illegalDrugs,
-    'Other goods': ReportReason.illegalDrugs,
-    'Nudity': ReportReason.pornography,
-    'Sexual abuse': ReportReason.pornography,
-    'Child sexual abuse material': ReportReason.childAbuse,
-    'Other adult content': ReportReason.pornography,
-    'Identity theft': ReportReason.fakeAccount,
-    'Leaked phone number': ReportReason.privateData,
-    'Leaked address': ReportReason.privateData,
-    'Other personal data': ReportReason.privateData
+    'Scam or spam': InputReportReasonSpam(),
+    'Violence': InputReportReasonViolence(),
+    'Child abuse': InputReportReasonChildAbuse(),
+    'Illegal goods': InputReportReasonIllegalDrugs(),
+    'Illegal adult content': InputReportReasonPornography(),
+    'Personal data': InputReportReasonPersonalDetails(),
+    'Terrorism': InputReportReasonViolence(), # Using a similar category
+    'Copyright': InputReportReasonCopyright(),
+    'Other': InputReportReasonOther(),
+    'I don’t like it': InputReportReasonUnwanted(),
+    'It’s not illegal, but must be taken down': InputReportReasonUnwanted(),
+    'Phishing': InputReportReasonSpam(),
+    'Impersonation': InputReportReasonFake(),
+    'Fraudulent sales': InputReportReasonSpam(),
+    'Spam': InputReportReasonSpam(),
+    'Weapons': InputReportReasonIllegalDrugs(),
+    'Drugs': InputReportReasonIllegalDrugs(),
+    'Fake documents': InputReportReasonFake(),
+    'Counterfeit money': InputReportReasonFake(),
+    'Other goods': InputReportReasonIllegalDrugs(),
+    'Nudity': InputReportReasonPornography(),
+    'Sexual abuse': InputReportReasonChildAbuse(), # Adjusted for a closer fit
+    'Child sexual abuse material': InputReportReasonChildAbuse(),
+    'Other adult content': InputReportReasonPornography(),
+    'Identity theft': InputReportReasonFake(),
+    'Leaked phone number': InputReportReasonPersonalDetails(),
+    'Leaked address': InputReportReasonPersonalDetails(),
+    'Other personal data': InputReportReasonPersonalDetails()
 }
 
 session_locks = {}
 user_tasks = {}
 task_counter = 0
 
-# --- File/Directory Initialization ---
+# --- Utility Functions ---
 def init_files():
     if not os.path.exists(SESSION_FOLDER):
         os.makedirs(SESSION_FOLDER)
@@ -132,7 +90,6 @@ def init_files():
         with open(EMAIL_LIST_FILE, 'w') as f:
             f.write('')
 
-# --- Utility Functions ---
 def load_granted_users():
     if not os.path.exists(GRANTED_USERS_FILE):
         return []
@@ -153,7 +110,7 @@ def load_email_accounts():
     with open(EMAIL_LIST_FILE, 'r') as f:
         for line in f:
             line = line.strip()
-            if not line or ':' in line:
+            if not line or ':' not in line:
                 continue
             email, password = line.split(':', 1)
             accounts.append({'email': email, 'password': password})
@@ -286,9 +243,53 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         report_type_text = query.data.split('_', 2)[-1]
         context.user_data['report_type_text'] = report_type_text
         
+        # Mapping for main report types
+        REPORT_OPTIONS = {
+            'Scam or spam',
+            'Violence',
+            'Child abuse',
+            'Illegal goods',
+            'Illegal adult content',
+            'Personal data',
+            'Terrorism',
+            'Copyright',
+            'Other',
+            'I don’t like it',
+            'It’s not illegal, but must be taken down'
+        }
+        
+        # Mapping for specific report subtypes
+        REPORT_SUBTYPES = {
+            'Scam or spam': {
+                'Phishing',
+                'Impersonation',
+                'Fraudulent sales',
+                'Spam'
+            },
+            'Illegal goods': {
+                'Weapons',
+                'Drugs',
+                'Fake documents',
+                'Counterfeit money',
+                'Other goods'
+            },
+            'Illegal adult content': {
+                'Nudity',
+                'Sexual abuse',
+                'Child sexual abuse material',
+                'Other adult content'
+            },
+            'Personal data': {
+                'Identity theft',
+                'Leaked phone number',
+                'Leaked address',
+                'Other personal data'
+            }
+        }
+        
         if report_type_text in REPORT_SUBTYPES:
             subtype_options = REPORT_SUBTYPES[report_type_text]
-            keyboard_buttons = [[InlineKeyboardButton(text=opt, callback_data=f'report_subtype_{opt}')] for opt in subtype_options.keys()]
+            keyboard_buttons = [[InlineKeyboardButton(text=opt, callback_data=f'report_subtype_{opt}')] for opt in subtype_options]
             reply_markup = InlineKeyboardMarkup(keyboard_buttons)
             await query.edit_message_text(f"Please choose a specific reason for '{report_type_text}':", reply_markup=reply_markup)
         else:
@@ -543,7 +544,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             
     elif user_state == 'awaiting_link':
         context.user_data['target_link'] = user_message
-        keyboard_buttons = [[InlineKeyboardButton(text=key, callback_data=f'report_type_{key}')] for key in REPORT_OPTIONS.keys()]
+        
+        REPORT_OPTIONS = {
+            'Scam or spam', 'Violence', 'Child abuse', 'Illegal goods', 'Illegal adult content', 
+            'Personal data', 'Terrorism', 'Copyright', 'Other', 'I don’t like it', 
+            'It’s not illegal, but must be taken down'
+        }
+        
+        keyboard_buttons = [[InlineKeyboardButton(text=key, callback_data=f'report_type_{key}')] for key in REPORT_OPTIONS]
         reply_markup = InlineKeyboardMarkup(keyboard_buttons)
         await update.message.reply_text("Please choose a report type:", reply_markup=reply_markup)
         context.user_data['state'] = 'awaiting_report_type_selection'
@@ -689,8 +697,8 @@ async def start_email_reporting_process(update, context, email_accounts, target_
             task = asyncio.create_task(send_single_email_report(update, context, account, target_link, report_type_text, i + 1, report_count, report_message, task_id, attachment))
             await_tasks.append(task)
     await asyncio.gather(*await_tasks, return_exceptions=True)
-    if user_id in user_tasks and task_id in user_tasks[user_id]:
-        del user_tasks[user_id][task_id]
+    if update.effective_user.id in user_tasks and task_id in user_tasks[update.effective_user.id]:
+        del user_tasks[update.effective_user.id][task_id]
     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Email reporting task #{task_id} has been completed.")
 
 async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -795,30 +803,14 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 message_id = int(match.group(2))
                 entity = await client.get_entity(channel_name)
                 
-                # --- OLD CODE ---
-                # report_option_byte = None
-                # found_subtype = False
-                # for main_type, subtypes in REPORT_SUBTYPES.items():
-                #     if report_type_text in subtypes:
-                #         report_option_byte = subtypes[report_type_text]
-                #         found_subtype = True
-                #         break
-                # if not found_subtype:
-                #     report_option_byte = REPORT_OPTIONS.get(report_type_text)
-                # if report_option_byte is None:
-                #     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected: {report_type_text}. Skipping.")
-                #     return
-                # result = await client(ReportRequest(peer=entity, id=[message_id], option=report_option_byte, message=report_message))
-                
-                # --- NEW, FIXED CODE ---
-                report_reason = REPORT_REASONS.get(report_type_text)
-                if not report_reason:
+                report_reason_obj = REPORT_REASONS.get(report_type_text)
+                if not report_reason_obj:
                     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected: {report_type_text}. Skipping.")
                     return
                 
-                result = await client(ReportRequest(peer=entity, id=[message_id], reason=report_reason, message=report_message))
-                # --- END NEW, FIXED CODE ---
-                
+                # Using the correct parameter name 'reason' and passing the correct object
+                result = await client(ReportRequest(peer=entity, id=[message_id], reason=report_reason_obj, message=report_message))
+
                 response_message = f"✅ Report Send {current_report_count}/{total_report_count} task #{task_id}.\n\n"
                 response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
                 response_message += f"Original api response: {str(result)}"
