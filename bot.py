@@ -13,7 +13,7 @@ from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import (
     InputPeerChannel, Channel, ReportResultChooseOption, MessageReportOption
 )
-from telethon.errors import RPCError, FloodWaitError
+from telethon.errors import RPCError, FloodWaitError, UserAlreadyParticipantError
 import traceback
 import random
 import sqlite3
@@ -110,6 +110,15 @@ def init_db():
             report_count INTEGER,
             reported_posts_count INTEGER DEFAULT 0,
             status TEXT DEFAULT 'active'
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS report_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_link TEXT,
+            message_id INTEGER,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            response_json TEXT
         )
     ''')
     conn.commit()
@@ -228,14 +237,42 @@ def update_reported_count(link):
     conn.commit()
     conn.close()
 
+def add_report_record(channel_link, message_id, response):
+    conn = sqlite3.connect(DATABASE_FILE)
+    c = conn.cursor()
+    c.execute("INSERT INTO report_records (channel_link, message_id, response_json) VALUES (?, ?, ?)",
+              (channel_link, message_id, json.dumps(str(response))))
+    conn.commit()
+    conn.close()
+
+def get_last_report_records(channel_link, limit=5):
+    conn = sqlite3.connect(DATABASE_FILE)
+    c = conn.cursor()
+    c.execute("SELECT message_id, timestamp, response_json FROM report_records WHERE channel_link = ? ORDER BY timestamp DESC LIMIT ?",
+              (channel_link, limit))
+    rows = c.fetchall()
+    conn.close()
+    records = []
+    for row in rows:
+        records.append({
+            'message_id': row[0],
+            'timestamp': row[1],
+            'response': json.loads(row[2])
+        })
+    return records
+
+
 # --- Telethon Client & Event Handler ---
 telethon_client = TelegramClient('bot_event_handler', API_ID, API_HASH)
 
 @telethon_client.on(events.NewMessage)
 async def handle_new_message(event):
+    if not event.is_channel:
+        return
+    
     channels_to_report = get_all_channels_from_db()
     for channel in channels_to_report:
-        link, report_type, message, count, reported_count, status = channel
+        link, report_type_text, message, count, reported_count, status = channel
         if status != 'active':
             continue
 
@@ -243,12 +280,73 @@ async def handle_new_message(event):
             entity = await telethon_client.get_entity(link)
             if entity.id == event.chat_id:
                 if event.message:
-                    # Report the new message
-                    await telethon_client.report_spam(event.chat_id)
-                    logging.info(f"Automatically reported new message in channel {link} with a spam report.")
+                    logging.info(f"New message detected in channel {link}. Starting report process...")
+                    
+                    accounts_to_use = get_logged_in_accounts(OWNER_ID, all_access=True)
+                    if not accounts_to_use:
+                        logging.warning("No accounts logged in to send auto-reports.")
+                        return
+
+                    report_option_byte = None
+                    found_subtype = False
+                    for main_type, subtypes in REPORT_SUBTYPES.items():
+                        if report_type_text in subtypes:
+                            report_option_byte = subtypes[report_type_text]
+                            found_subtype = True
+                            break
+                    if not found_subtype:
+                        report_option_byte = REPORT_OPTIONS.get(report_type_text)
+
+                    if report_option_byte is None:
+                        logging.error(f"Invalid report type selected for channel {link}: {report_type_text}. Skipping auto-report.")
+                        return
+
+                    report_tasks = []
+                    for phone_number, account_user_id in accounts_to_use:
+                        task = asyncio.create_task(send_single_auto_report(phone_number, account_user_id, entity, event.message.id, report_option_byte, message))
+                        report_tasks.append(task)
+                    
+                    await asyncio.gather(*report_tasks)
                     update_reported_count(link)
+
         except Exception as e:
             logging.error(f"Error auto-reporting for channel {link}: {e}")
+
+async def send_single_auto_report(phone_number, account_user_id, entity, message_id, report_option_byte, report_message):
+    session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
+    session_path = os.path.join(session_folder, phone_number)
+    
+    if phone_number not in session_locks:
+        session_locks[phone_number] = asyncio.Lock()
+    
+    async with session_locks[phone_number]:
+        if not os.path.exists(session_path + '.session'):
+            logging.warning(f"Session file not found for {phone_number}. Skipping auto-report.")
+            return
+
+        client = TelegramClient(session_path, API_ID, API_HASH)
+        
+        try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                logging.warning(f"Account {phone_number} is not authorized. Skipping auto-report.")
+                return
+
+            response = await client(ReportRequest(peer=entity, id=[message_id], option=report_option_byte, message=report_message))
+            logging.info(f"Report sent successfully from {phone_number} for message {message_id} in {entity.title}")
+            add_report_record(entity.username if entity.username else str(entity.id), message_id, response)
+            
+        except RPCError as e:
+            logging.error(f"RPCError from {phone_number} on auto-report: {e}")
+        except FloodWaitError as e:
+            logging.warning(f"FloodWaitError from {phone_number} on auto-report. Waiting for {e.seconds} seconds.")
+            await asyncio.sleep(e.seconds)
+        except Exception as e:
+            logging.error(f"General error from {phone_number} on auto-report: {e}")
+            logging.error(traceback.format_exc())
+        finally:
+            if client.is_connected():
+                await client.disconnect()
 
 # --- Bot Handlers (Telegram.ext) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -459,7 +557,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         keyboard = [
             [InlineKeyboardButton(f"{toggle_status.capitalize()} Reporting", callback_data=f'toggle_channel_{channel_link}')],
             [InlineKeyboardButton("Delete Channel 🗑️", callback_data=f'delete_channel_{channel_link}')],
-            [InlineKeyboardButton("Check Report Count ✅", callback_data=f'check_channel_{channel_link}')],
+            [InlineKeyboardButton("Check Records ✅", callback_data=f'check_channel_records_{channel_link}')],
             [InlineKeyboardButton("Back ↩️", callback_data='add_channel_list')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -482,20 +580,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await asyncio.sleep(1) # Wait for message to be sent
         await button_handler(update, context) # Reload the menu
 
+    elif query.data.startswith('check_channel_records_'):
+        channel_link = query.data.split('_', 3)[-1]
+        records = get_last_report_records(channel_link)
+        if not records:
+            await query.edit_message_text("No report records found for this channel.")
+            return
+        
+        response_text = f"**Last 5 Report Records for {channel_link}:**\n\n"
+        for record in records:
+            response_text += f"**Timestamp:** {record['timestamp']}\n"
+            response_text += f"**Message ID:** {record['message_id']}\n"
+            response_text += f"**API Response:** `{record['response']}`\n"
+            response_text += "--------------------------------------\n"
+        
+        await query.edit_message_text(response_text)
+
     elif query.data.startswith('delete_channel_'):
         channel_link = query.data.split('_', 2)[-1]
         delete_channel_from_db(channel_link)
         await query.edit_message_text(f"✅ Channel {channel_link} has been deleted from the list.")
     
-    elif query.data.startswith('check_channel_'):
-        channel_link = query.data.split('_', 2)[-1]
-        channels = get_all_channels_from_db()
-        found = next((ch for ch in channels if ch[0] == channel_link), None)
-        if found:
-            await query.edit_message_text(f"Reports sent for {channel_link}: {found[4]} posts.")
-        else:
-            await query.edit_message_text("Channel not found.")
-
     elif query.data == 'backup_sessions' and is_owner(user_id):
         await query.edit_message_text("Creating a full project backup. This may take a moment...")
         await create_full_backup(query, context)
@@ -763,39 +868,54 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await update.message.reply_text("❌ No accounts are logged in to join the channel. Please log in first.")
             context.user_data['state'] = None
             return
+        
+        join_tasks = []
+        for phone_number, account_user_id in accounts:
+            join_tasks.append(join_channel_for_account(update, context, link, phone_number, account_user_id))
+        
+        await asyncio.gather(*join_tasks)
 
-        phone_number, account_user_id = accounts[0] # Use the first logged-in account
-        
-        session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
-        session_path = os.path.join(session_folder, phone_number)
-        
+async def join_channel_for_account(update: Update, context: ContextTypes.DEFAULT_TYPE, link: str, phone_number: str, account_user_id: int):
+    session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
+    session_path = os.path.join(session_folder, phone_number)
+    
+    if phone_number not in session_locks:
+        session_locks[phone_number] = asyncio.Lock()
+    
+    async with session_locks[phone_number]:
+        if not os.path.exists(session_path + '.session'):
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ **{mask_phone_number(phone_number)}:** Session file not found. Skipping.")
+            return
+
         client = TelegramClient(session_path, API_ID, API_HASH)
         
         try:
             await client.connect()
             if not await client.is_user_authorized():
-                await update.message.reply_text("❌ The selected account is not authorized. Please re-login.")
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ **{mask_phone_number(phone_number)}:** Account not authorized. Skipping.")
                 return
-                
+
             if link.startswith('https://t.me/+'):
-                await update.message.reply_text("Joining private channel...")
                 invite_hash = link.split('+')[1]
                 await client(ImportChatInviteRequest(invite_hash))
-                await update.message.reply_text("✅ Joined the private channel successfully!")
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ **{mask_phone_number(phone_number)}:** Joined the private channel successfully!")
             elif link.startswith('https://t.me/'):
-                await update.message.reply_text("Joining public channel...")
                 channel_username = link.split('/')[-1]
                 await client(JoinChannelRequest(channel=channel_username))
-                await update.message.reply_text("✅ Joined the public channel successfully!")
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ **{mask_phone_number(phone_number)}:** Joined the public channel successfully!")
             else:
-                await update.message.reply_text("❌ Invalid link. Please provide a valid Telegram channel link.")
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ **{mask_phone_number(phone_number)}:** Invalid link format.")
+
+        except UserAlreadyParticipantError:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ **{mask_phone_number(phone_number)}:** Already a member of this channel.")
+        except RPCError as e:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ **{mask_phone_number(phone_number)}:** Failed to join channel. Reason: {e}")
         except Exception as e:
-            await update.message.reply_text(f"❌ Failed to join channel. Reason: {e}")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ **{mask_phone_number(phone_number)}:** An unexpected error occurred. Reason: {e}")
+            logging.error(f"Error joining channel for {phone_number}: {traceback.format_exc()}")
         finally:
             if client.is_connected():
                 await client.disconnect()
-            context.user_data['state'] = None
-
 
 async def start_reporting_process(update, context, accounts_to_use, target_link, report_type_text, report_count, report_message, task_id, user_id):
     delay_per_report = 5
@@ -943,6 +1063,7 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
                 response_message += f"Original api response: {str(result)}"
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
+                add_report_record(channel_name, message_id, result)
             else:
                 entity = await client.get_entity(target_link)
                 result = await client(ReportSpamRequest(peer=entity))
