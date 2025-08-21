@@ -425,7 +425,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     elif query.data == 'add_new_channel':
         await query.edit_message_text("Please send the channel link (e.g., t.me/channel_name) to add it to the auto-report list.")
-        context.user_data['state'] = 'awaiting_channel_link'
+        context.user_data['state'] = 'awaiting_channel_link_for_auto_report'
+
+    elif query.data.startswith('add_channel_type_'):
+        report_type_text = query.data.split('_', 3)[-1]
+        context.user_data['add_report_type_text'] = report_type_text
+        
+        if report_type_text in REPORT_SUBTYPES:
+            subtype_options = REPORT_SUBTYPES[report_type_text]
+            keyboard_buttons = [[InlineKeyboardButton(text=opt, callback_data=f'add_channel_subtype_{opt}')] for opt in subtype_options.keys()]
+            reply_markup = InlineKeyboardMarkup(keyboard_buttons)
+            await query.edit_message_text(f"Please choose a specific reason for '{report_type_text}':", reply_markup=reply_markup)
+        else:
+            await query.edit_message_text(f"You selected '{report_type_text}'. Now, please provide a brief message and the number of times to report (e.g., 'Violent content 5').")
+            context.user_data['state'] = 'awaiting_add_report_message_and_count'
+            
+    elif query.data.startswith('add_channel_subtype_'):
+        report_subtype_text = query.data.split('_', 3)[-1]
+        context.user_data['add_report_type_text'] = report_subtype_text
+        await query.edit_message_text(f"You selected '{report_subtype_text}'. Now, please provide a brief message and the number of times to report (e.g., 'Violent content 5').")
+        context.user_data['state'] = 'awaiting_add_report_message_and_count'
 
     elif query.data.startswith('manage_channel_'):
         channel_link = query.data.split('_', 2)[-1]
@@ -703,18 +722,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await update.message.reply_text("Please provide a comment and a number separated by a space (e.g., 'Violent content 5').")
             context.user_data['state'] = 'awaiting_report_comment_and_count'
     
-    elif user_state == 'awaiting_channel_link':
-        context.user_data['channel_link'] = user_message
-        keyboard_buttons = [[InlineKeyboardButton(text=key, callback_data=f'add_report_type_{key}')] for key in REPORT_OPTIONS.keys()]
+    elif user_state == 'awaiting_channel_link_for_auto_report':
+        context.user_data['channel_link_for_auto_report'] = user_message
+        keyboard_buttons = [[InlineKeyboardButton(text=key, callback_data=f'add_channel_type_{key}')] for key in REPORT_OPTIONS.keys()]
         reply_markup = InlineKeyboardMarkup(keyboard_buttons)
         await update.message.reply_text("Please choose a report type for this channel:", reply_markup=reply_markup)
         context.user_data['state'] = 'awaiting_add_report_type'
-
-    elif user_state == 'awaiting_add_report_type':
-        report_type_text = update.message.text
-        context.user_data['report_type'] = report_type_text
-        await update.message.reply_text("Please send the report message and the number of reports (e.g., 'Violent content 5').")
-        context.user_data['state'] = 'awaiting_add_report_message_and_count'
 
     elif user_state == 'awaiting_add_report_message_and_count':
         try:
@@ -722,15 +735,20 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             report_message = parts[0].strip()
             report_count = int(parts[1].strip())
             
-            link = context.user_data.get('channel_link')
-            report_type = context.user_data.get('report_type')
+            link = context.user_data.get('channel_link_for_auto_report')
+            report_type = context.user_data.get('add_report_type_text')
             
+            if not link or not report_type:
+                 await update.message.reply_text("An error occurred. Please start the process again from the menu.")
+                 context.user_data['state'] = None
+                 return
+
             add_channel_to_db(link, report_type, report_message, report_count)
             await update.message.reply_text(f"✅ Channel {link} has been added to the auto-report list. It will be reported automatically when new posts are detected.")
             
             context.user_data['state'] = None
-            context.user_data.pop('channel_link', None)
-            context.user_data.pop('report_type', None)
+            context.user_data.pop('channel_link_for_auto_report', None)
+            context.user_data.pop('add_report_type_text', None)
             
         except (ValueError, IndexError):
             await update.message.reply_text("❌ Invalid format. Please provide a comment and a number separated by a space.")
@@ -738,23 +756,46 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             
     elif user_state == 'awaiting_join_link':
         link = user_message
+        user_id = update.effective_user.id
+        
+        accounts = get_logged_in_accounts(user_id)
+        if not accounts:
+            await update.message.reply_text("❌ No accounts are logged in to join the channel. Please log in first.")
+            context.user_data['state'] = None
+            return
+
+        phone_number, account_user_id = accounts[0] # Use the first logged-in account
+        
+        session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
+        session_path = os.path.join(session_folder, phone_number)
+        
+        client = TelegramClient(session_path, API_ID, API_HASH)
+        
         try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                await update.message.reply_text("❌ The selected account is not authorized. Please re-login.")
+                return
+                
             if link.startswith('https://t.me/+'):
                 await update.message.reply_text("Joining private channel...")
                 invite_hash = link.split('+')[1]
-                await telethon_client(ImportChatInviteRequest(invite_hash))
+                await client(ImportChatInviteRequest(invite_hash))
                 await update.message.reply_text("✅ Joined the private channel successfully!")
             elif link.startswith('https://t.me/'):
                 await update.message.reply_text("Joining public channel...")
                 channel_username = link.split('/')[-1]
-                await telethon_client(JoinChannelRequest(channel=channel_username))
+                await client(JoinChannelRequest(channel=channel_username))
                 await update.message.reply_text("✅ Joined the public channel successfully!")
             else:
                 await update.message.reply_text("❌ Invalid link. Please provide a valid Telegram channel link.")
         except Exception as e:
             await update.message.reply_text(f"❌ Failed to join channel. Reason: {e}")
         finally:
+            if client.is_connected():
+                await client.disconnect()
             context.user_data['state'] = None
+
 
 async def start_reporting_process(update, context, accounts_to_use, target_link, report_type_text, report_count, report_message, task_id, user_id):
     delay_per_report = 5
