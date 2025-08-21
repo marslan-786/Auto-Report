@@ -800,16 +800,21 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 message_id = int(match.group(2))
                 entity = await client.get_entity(channel_name)
                 
-                # Check for the correct report reason object
                 report_reason_obj = REPORT_REASONS.get(report_type_text)
                 if not report_reason_obj:
                     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected: {report_type_text}. Skipping.")
                     return
                 
                 # --- FIX APPLIED HERE ---
-                # Now using the correct method to report a message.
-                # The 'reason' and 'message' are separate parameters in this method.
-                await client.report_messages(entity, message_id, reason=report_reason_obj, message=report_message)
+                # This is the correct way to use ReportRequest. We first get the entity,
+                # then use the proper function to make the report.
+                
+                await client(ReportRequest(
+                    peer=entity,
+                    id=[message_id],
+                    reason=report_reason_obj,
+                    message=report_message
+                ))
 
                 response_message = f"✅ Report Send {current_report_count}/{total_report_count} task #{task_id}.\n\n"
                 response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
