@@ -1202,8 +1202,7 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
             dialogs = await client(GetDialogsRequest(offset_date=None, offset_id=0, offset_peer=InputPeerChannel(channel_id=0, access_hash=0), limit=200, hash=0))
             channels = [d.entity.title for d in dialogs.chats if isinstance(d.entity, Channel)]
             if channels:
-                channel_list_text = "\n".joi
-n(channels)
+                channel_list_text = "\n".join(channels)  # <-- یہاں غلطی کو ٹھیک کیا گیا ہے
                 await context.bot.send_message(chat_id=chat_id, text=f"Channels for account {mask_phone_number(phone_number)}:\n\n{channel_list_text}")
             else:
                 await context.bot.send_message(chat_id=chat_id, text=f"Account {mask_phone_number(phone_number)} has not joined any channels.")
@@ -1214,6 +1213,7 @@ n(channels)
             if 'client' in locals() and client and client.is_connected():
                 await client.disconnect()
             await context.bot.send_message(chat_id=chat_id, text=f"✅ Channel fetching for account {mask_phone_number(phone_number)} completed.")
+
 
 async def create_full_backup(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
