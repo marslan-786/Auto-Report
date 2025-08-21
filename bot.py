@@ -947,7 +947,7 @@ async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE, pho
         await query.edit_message_text(f"❌ An error occurred while deleting the session file: {e}")
     await manage_accounts(update, context)
 
-async def main() -> None:
+def main() -> None:
     """Runs the bot indefinitely until the user presses Ctrl+C"""
     init_files()
     application = Application.builder().token(BOT_TOKEN).build()
@@ -958,7 +958,8 @@ async def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO & ~filters.COMMAND, message_handler))
 
     logging.info("Starting bot polling...")
-    await application.run_polling(drop_pending_updates=True)
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
+
