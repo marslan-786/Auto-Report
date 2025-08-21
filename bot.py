@@ -13,7 +13,7 @@ from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import (
     InputPeerChannel, Channel, ReportResultChooseOption, MessageReportOption
 )
-from telethon.errors import RPCError, FloodWaitError, UserAlreadyParticipantError
+from telethon.errors import RPCError, FloodWaitError, UserAlreadyParticipantError, SessionPasswordNeededError
 import traceback
 import random
 import sqlite3
@@ -38,6 +38,8 @@ SESSION_FOLDER = 'sessions'
 GRANTED_USERS_FILE = 'granted_users.json'
 EMAIL_LIST_FILE = 'email.txt'
 DATABASE_FILE = 'channels.db'
+# Specify the single session file for detection
+DETECTION_SESSION_PHONE = '+923117822922' 
 
 # Mapping for main report types
 REPORT_OPTIONS = {
@@ -149,7 +151,7 @@ def load_email_accounts():
     with open(EMAIL_LIST_FILE, 'r') as f:
         for line in f:
             line = line.strip()
-            if not line or ':' not in line:
+            if not line or ':' in line: # Changed to 'in'
                 continue
             email, password = line.split(':', 1)
             accounts.append({'email': email, 'password': password})
@@ -311,6 +313,7 @@ async def handle_new_channel_message(event):
                     accounts_to_use = get_logged_in_accounts(OWNER_ID, all_access=True)
                     if not accounts_to_use:
                         logging.warning("No accounts logged in to send auto-reports.")
+                        await send_owner_error(f"❌ **Auto-Report Error:**\nNo accounts logged in to send auto-reports for channel: `{link}`.")
                         return
 
                     report_option_byte = None
@@ -324,7 +327,9 @@ async def handle_new_channel_message(event):
                         report_option_byte = REPORT_OPTIONS.get(report_type_text)
 
                     if report_option_byte is None:
-                        logging.error(f"Invalid report type selected for channel {link}: {report_type_text}. Skipping auto-report.")
+                        error_msg = f"❌ **Auto-Report Error:**\nInvalid report type selected for channel `{link}`: `{report_type_text}`. Skipping auto-report."
+                        logging.error(error_msg)
+                        await send_owner_error(error_msg)
                         return
 
                     report_tasks = []
@@ -335,7 +340,10 @@ async def handle_new_channel_message(event):
                     
                     await asyncio.gather(*report_tasks)
         except Exception as e:
-            logging.error(f"Error auto-reporting for channel {link}: {e}")
+            error_msg = f"❌ **Auto-Report Error:**\nAn unexpected error occurred while processing channel `{link}`.\n\n**Error Details:**\n`{type(e).__name__}: {str(e)}`"
+            logging.error(error_msg)
+            await send_owner_error(error_msg)
+            await send_owner_error(traceback.format_exc())
 
 async def send_single_auto_report(phone_number, account_user_id, entity, message_id, report_option_byte, report_message, channel_link):
     session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
@@ -346,7 +354,9 @@ async def send_single_auto_report(phone_number, account_user_id, entity, message
     
     async with session_locks[phone_number]:
         if not os.path.exists(session_path + '.session'):
-            logging.warning(f"Session file not found for {phone_number}. Skipping auto-report.")
+            error_msg = f"❌ **Auto-Report Error:**\nSession file not found for `{mask_phone_number(phone_number)}`. Skipping auto-report for channel `{channel_link}`."
+            logging.warning(error_msg)
+            await send_owner_error(error_msg)
             update_report_counts(channel_link, False, message_id)
             add_report_record(channel_link, message_id, "Session file not found", "Failed")
             return
@@ -356,7 +366,9 @@ async def send_single_auto_report(phone_number, account_user_id, entity, message
         try:
             await client.connect()
             if not await client.is_user_authorized():
-                logging.warning(f"Account {phone_number} is not authorized. Skipping auto-report.")
+                error_msg = f"❌ **Auto-Report Error:**\nAccount `{mask_phone_number(phone_number)}` is not authorized. Skipping auto-report for channel `{channel_link}`."
+                logging.warning(error_msg)
+                await send_owner_error(error_msg)
                 update_report_counts(channel_link, False, message_id)
                 add_report_record(channel_link, message_id, "Account not authorized", "Failed")
                 return
@@ -373,7 +385,9 @@ async def send_single_auto_report(phone_number, account_user_id, entity, message
                     await bot_application.bot.send_message(chat_id=user_id, text=f"✅ **Live Log:**\nAccount: {mask_phone_number(phone_number)}\nPost ID: {message_id}\nStatus: Success\nResponse: `{str(response)}`", parse_mode='Markdown')
             
         except RPCError as e:
-            logging.error(f"RPCError from {phone_number} on auto-report: {e}")
+            error_msg = f"❌ **Auto-Report Error:**\nRPCError from `{mask_phone_number(phone_number)}` on auto-report for channel `{channel_link}`.\n\n**Error Details:**\n`{type(e).__name__}: {str(e)}`"
+            logging.error(error_msg)
+            await send_owner_error(error_msg)
             update_report_counts(channel_link, False, message_id)
             add_report_record(channel_link, message_id, str(e), "Failed")
             # Send live log update
@@ -383,7 +397,9 @@ async def send_single_auto_report(phone_number, account_user_id, entity, message
                     await bot_application.bot.send_message(chat_id=user_id, text=f"❌ **Live Log:**\nAccount: {mask_phone_number(phone_number)}\nPost ID: {message_id}\nStatus: Failed\nResponse: `{str(e)}`", parse_mode='Markdown')
 
         except FloodWaitError as e:
-            logging.warning(f"FloodWaitError from {phone_number} on auto-report. Waiting for {e.seconds} seconds.")
+            error_msg = f"⚠️ **Auto-Report Warning:**\n`FloodWaitError` from `{mask_phone_number(phone_number)}` on auto-report for channel `{channel_link}`. Waiting for `{e.seconds}` seconds."
+            logging.warning(error_msg)
+            await send_owner_error(error_msg)
             await asyncio.sleep(e.seconds)
             update_report_counts(channel_link, False, message_id)
             add_report_record(channel_link, message_id, str(e), "Failed")
@@ -393,8 +409,10 @@ async def send_single_auto_report(phone_number, account_user_id, entity, message
                     bot_application = Application.builder().token(BOT_TOKEN).build()
                     await bot_application.bot.send_message(chat_id=user_id, text=f"❌ **Live Log:**\nAccount: {mask_phone_number(phone_number)}\nPost ID: {message_id}\nStatus: FloodWaitError\nResponse: `{str(e)}`", parse_mode='Markdown')
         except Exception as e:
-            logging.error(f"General error from {phone_number} on auto-report: {e}")
-            logging.error(traceback.format_exc())
+            error_msg = f"❌ **Auto-Report Error:**\nGeneral error from `{mask_phone_number(phone_number)}` on auto-report for channel `{channel_link}`.\n\n**Error Details:**\n`{type(e).__name__}: {str(e)}`"
+            logging.error(error_msg)
+            await send_owner_error(error_msg)
+            await send_owner_error(traceback.format_exc())
             update_report_counts(channel_link, False, message_id)
             add_report_record(channel_link, message_id, str(e), "Failed")
             # Send live log update
@@ -405,6 +423,14 @@ async def send_single_auto_report(phone_number, account_user_id, entity, message
         finally:
             if client.is_connected():
                 await client.disconnect()
+
+async def send_owner_error(message: str) -> None:
+    """Sends a formatted error message to the bot owner."""
+    try:
+        application = Application.builder().token(BOT_TOKEN).build()
+        await application.bot.send_message(chat_id=OWNER_ID, text=message, parse_mode='Markdown')
+    except Exception as e:
+        logging.error(f"Failed to send error message to owner: {e}")
 
 # --- Bot Handlers (Telegram.ext) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -854,8 +880,23 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             context.user_data['state'] = None
             context.user_data.pop('client', None)
             context.user_data.pop('phone_number', None)
+        except SessionPasswordNeededError:
+            await update.message.reply_text("Two-factor authentication is enabled. Please enter your password.")
+            context.user_data['state'] = 'awaiting_password'
         except Exception as e:
-            await update.message.reply_text(f"Invalid OTP. Please try again.")
+            await update.message.reply_text(f"Invalid OTP. Please try again. Error: {e}")
+    
+    elif user_state == 'awaiting_password':
+        password = user_message
+        client = context.user_data.get('client')
+        try:
+            await client.sign_in(password=password)
+            await update.message.reply_text("Successfully logged in! Your session file has been saved.")
+            context.user_data['state'] = None
+            context.user_data.pop('client', None)
+            context.user_data.pop('phone_number', None)
+        except Exception as e:
+            await update.message.reply_text(f"Invalid password. Please try again. Error: {e}")
             
     elif user_state == 'awaiting_link':
         context.user_data['target_link'] = user_message
@@ -1202,7 +1243,7 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
             dialogs = await client(GetDialogsRequest(offset_date=None, offset_id=0, offset_peer=InputPeerChannel(channel_id=0, access_hash=0), limit=200, hash=0))
             channels = [d.entity.title for d in dialogs.chats if isinstance(d.entity, Channel)]
             if channels:
-                channel_list_text = "\n".join(channels)  # <-- یہاں غلطی کو ٹھیک کیا گیا ہے
+                channel_list_text = "\n".join(channels)
                 await context.bot.send_message(chat_id=chat_id, text=f"Channels for account {mask_phone_number(phone_number)}:\n\n{channel_list_text}")
             else:
                 await context.bot.send_message(chat_id=chat_id, text=f"Account {mask_phone_number(phone_number)} has not joined any channels.")
@@ -1213,7 +1254,6 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
             if 'client' in locals() and client and client.is_connected():
                 await client.disconnect()
             await context.bot.send_message(chat_id=chat_id, text=f"✅ Channel fetching for account {mask_phone_number(phone_number)} completed.")
-
 
 async def create_full_backup(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
@@ -1313,11 +1353,30 @@ async def main_run() -> None:
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO & ~filters.COMMAND, message_handler))
 
-    # Start both clients concurrently
-    await asyncio.gather(
-        application.run_polling(),
-        telethon_client.start(bot_token=BOT_TOKEN)
-    )
+    # Start the application in a separate task
+    application_task = asyncio.create_task(application.run_polling())
+
+    # Initialize and connect the single Telethon client
+    # The session file for this client should be placed in `sessions/OWNER_ID/DETECTION_SESSION_PHONE.session`
+    detection_session_path = os.path.join(SESSION_FOLDER, str(OWNER_ID), DETECTION_SESSION_PHONE)
+    telethon_client = TelegramClient(detection_session_path, API_ID, API_HASH)
+    
+    try:
+        if not await telethon_client.is_user_authorized():
+            logging.warning(f"Detection session file not found or not authorized for {DETECTION_SESSION_PHONE}. Please login this account via the bot menu.")
+            await send_owner_error(f"⚠️ **Warning:**\nDetection session file not found or not authorized for `{DETECTION_SESSION_PHONE}`. Please login this account via the bot menu to enable channel post detection.")
+            # We will still run the bot application even if the detection client is not ready
+    except SessionPasswordNeededError:
+        logging.error("Two-factor authentication is enabled on the detection account. Please log in again and provide the password.")
+        await send_owner_error(f"❌ **Error:**\nTwo-factor authentication is enabled on the detection account `{DETECTION_SESSION_PHONE}`. Please log in again and provide the password.")
+    except Exception as e:
+        logging.error(f"Failed to connect Telethon client for detection: {e}")
+        await send_owner_error(f"❌ **Critical Error:**\nFailed to connect Telethon client for detection. Post detection will not work.\n\n**Error Details:**\n`{type(e).__name__}: {str(e)}`")
+    
+    telethon_task = asyncio.create_task(telethon_client.run_until_disconnected())
+    
+    await asyncio.gather(application_task, telethon_task)
 
 if __name__ == '__main__':
     asyncio.run(main_run())
+
