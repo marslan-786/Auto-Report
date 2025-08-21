@@ -109,6 +109,9 @@ def init_db():
             report_message TEXT,
             report_count INTEGER,
             reported_posts_count INTEGER DEFAULT 0,
+            successful_reports INTEGER DEFAULT 0,
+            failed_reports INTEGER DEFAULT 0,
+            last_reported_post_id INTEGER DEFAULT NULL,
             status TEXT DEFAULT 'active'
         )
     ''')
@@ -118,7 +121,8 @@ def init_db():
             channel_link TEXT,
             message_id INTEGER,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            response_json TEXT
+            response_json TEXT,
+            status TEXT
         )
     ''')
     conn.commit()
@@ -145,7 +149,7 @@ def load_email_accounts():
     with open(EMAIL_LIST_FILE, 'r') as f:
         for line in f:
             line = line.strip()
-            if not line or ':' not in line:
+            if not line or ':' in line:
                 continue
             email, password = line.split(':', 1)
             accounts.append({'email': email, 'password': password})
@@ -208,6 +212,14 @@ def add_channel_to_db(link, report_type, message, count):
     conn.commit()
     conn.close()
 
+def get_channel_info_from_db(link):
+    conn = sqlite3.connect(DATABASE_FILE)
+    c = conn.cursor()
+    c.execute("SELECT * FROM channels WHERE channel_link = ?", (link,))
+    row = c.fetchone()
+    conn.close()
+    return row
+
 def get_all_channels_from_db():
     conn = sqlite3.connect(DATABASE_FILE)
     c = conn.cursor()
@@ -230,25 +242,34 @@ def delete_channel_from_db(link):
     conn.commit()
     conn.close()
 
-def update_reported_count(link):
+def update_report_counts(link, is_success, message_id=None):
     conn = sqlite3.connect(DATABASE_FILE)
     c = conn.cursor()
+    if is_success:
+        c.execute("UPDATE channels SET successful_reports = successful_reports + 1 WHERE channel_link = ?", (link,))
+    else:
+        c.execute("UPDATE channels SET failed_reports = failed_reports + 1 WHERE channel_link = ?", (link,))
+    
     c.execute("UPDATE channels SET reported_posts_count = reported_posts_count + 1 WHERE channel_link = ?", (link,))
+    
+    if message_id:
+        c.execute("UPDATE channels SET last_reported_post_id = ? WHERE channel_link = ?", (message_id, link))
+
     conn.commit()
     conn.close()
 
-def add_report_record(channel_link, message_id, response):
+def add_report_record(channel_link, message_id, response, status):
     conn = sqlite3.connect(DATABASE_FILE)
     c = conn.cursor()
-    c.execute("INSERT INTO report_records (channel_link, message_id, response_json) VALUES (?, ?, ?)",
-              (channel_link, message_id, json.dumps(str(response))))
+    c.execute("INSERT INTO report_records (channel_link, message_id, response_json, status) VALUES (?, ?, ?, ?)",
+              (channel_link, message_id, json.dumps(str(response)), status))
     conn.commit()
     conn.close()
 
 def get_last_report_records(channel_link, limit=5):
     conn = sqlite3.connect(DATABASE_FILE)
     c = conn.cursor()
-    c.execute("SELECT message_id, timestamp, response_json FROM report_records WHERE channel_link = ? ORDER BY timestamp DESC LIMIT ?",
+    c.execute("SELECT message_id, timestamp, response_json, status FROM report_records WHERE channel_link = ? ORDER BY timestamp DESC LIMIT ?",
               (channel_link, limit))
     rows = c.fetchall()
     conn.close()
@@ -257,7 +278,8 @@ def get_last_report_records(channel_link, limit=5):
         records.append({
             'message_id': row[0],
             'timestamp': row[1],
-            'response': json.loads(row[2])
+            'response': json.loads(row[2]),
+            'status': row[3]
         })
     return records
 
@@ -272,14 +294,15 @@ async def handle_new_message(event):
     
     channels_to_report = get_all_channels_from_db()
     for channel in channels_to_report:
-        link, report_type_text, message, count, reported_count, status = channel
+        link, report_type_text, message, count, reported_count, successful_reports, failed_reports, last_reported_id, status = channel
+        
         if status != 'active':
             continue
 
         try:
             entity = await telethon_client.get_entity(link)
             if entity.id == event.chat_id:
-                if event.message:
+                if event.message and event.message.id != last_reported_id:
                     logging.info(f"New message detected in channel {link}. Starting report process...")
                     
                     accounts_to_use = get_logged_in_accounts(OWNER_ID, all_access=True)
@@ -303,16 +326,15 @@ async def handle_new_message(event):
 
                     report_tasks = []
                     for phone_number, account_user_id in accounts_to_use:
-                        task = asyncio.create_task(send_single_auto_report(phone_number, account_user_id, entity, event.message.id, report_option_byte, message))
+                        task = asyncio.create_task(send_single_auto_report(phone_number, account_user_id, entity, event.message.id, report_option_byte, message, link))
                         report_tasks.append(task)
                     
                     await asyncio.gather(*report_tasks)
-                    update_reported_count(link)
-
+                    # update_reported_count(link)
         except Exception as e:
             logging.error(f"Error auto-reporting for channel {link}: {e}")
 
-async def send_single_auto_report(phone_number, account_user_id, entity, message_id, report_option_byte, report_message):
+async def send_single_auto_report(phone_number, account_user_id, entity, message_id, report_option_byte, report_message, channel_link):
     session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
     session_path = os.path.join(session_folder, phone_number)
     
@@ -322,6 +344,8 @@ async def send_single_auto_report(phone_number, account_user_id, entity, message
     async with session_locks[phone_number]:
         if not os.path.exists(session_path + '.session'):
             logging.warning(f"Session file not found for {phone_number}. Skipping auto-report.")
+            update_report_counts(channel_link, False, message_id)
+            add_report_record(channel_link, message_id, "Session file not found", "Failed")
             return
 
         client = TelegramClient(session_path, API_ID, API_HASH)
@@ -330,20 +354,29 @@ async def send_single_auto_report(phone_number, account_user_id, entity, message
             await client.connect()
             if not await client.is_user_authorized():
                 logging.warning(f"Account {phone_number} is not authorized. Skipping auto-report.")
+                update_report_counts(channel_link, False, message_id)
+                add_report_record(channel_link, message_id, "Account not authorized", "Failed")
                 return
 
             response = await client(ReportRequest(peer=entity, id=[message_id], option=report_option_byte, message=report_message))
             logging.info(f"Report sent successfully from {phone_number} for message {message_id} in {entity.title}")
-            add_report_record(entity.username if entity.username else str(entity.id), message_id, response)
+            update_report_counts(channel_link, True, message_id)
+            add_report_record(channel_link, message_id, response, "Success")
             
         except RPCError as e:
             logging.error(f"RPCError from {phone_number} on auto-report: {e}")
+            update_report_counts(channel_link, False, message_id)
+            add_report_record(channel_link, message_id, str(e), "Failed")
         except FloodWaitError as e:
             logging.warning(f"FloodWaitError from {phone_number} on auto-report. Waiting for {e.seconds} seconds.")
             await asyncio.sleep(e.seconds)
+            update_report_counts(channel_link, False, message_id)
+            add_report_record(channel_link, message_id, str(e), "Failed")
         except Exception as e:
             logging.error(f"General error from {phone_number} on auto-report: {e}")
             logging.error(traceback.format_exc())
+            update_report_counts(channel_link, False, message_id)
+            add_report_record(channel_link, message_id, str(e), "Failed")
         finally:
             if client.is_connected():
                 await client.disconnect()
@@ -514,7 +547,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         channels = get_all_channels_from_db()
         keyboard = [[InlineKeyboardButton("Add New Channel ➕", callback_data='add_new_channel')]]
         
-        for link, report_type, message, count, reported_count, status in channels:
+        for link, report_type, message, count, reported_count, successful_reports, failed_reports, last_reported_id, status in channels:
             status_text = "Active ✅" if status == 'active' else "Paused ⏸️"
             keyboard.append([InlineKeyboardButton(f"Channel: {link} ({status_text})", callback_data=f'manage_channel_{link}')])
         
@@ -546,12 +579,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     elif query.data.startswith('manage_channel_'):
         channel_link = query.data.split('_', 2)[-1]
-        channel_info = next((ch for ch in get_all_channels_from_db() if ch[0] == channel_link), None)
+        channel_info = get_channel_info_from_db(channel_link)
         if not channel_info:
             await query.edit_message_text("Channel not found.")
             return
 
-        status = channel_info[5]
+        link, report_type, message, count, reported_count, successful_reports, failed_reports, last_reported_id, status = channel_info
+        
+        status_text = "Active ✅" if status == 'active' else "Paused ⏸️"
+        
+        message_text = f"""
+**Channel Management Dashboard**
+------------------------------
+**Channel:** {link}
+**Status:** {status_text}
+**Total Posts Reported:** {reported_count}
+**Successful Reports:** {successful_reports}
+**Failed Reports:** {failed_reports}
+**Last Reported Post ID:** {last_reported_id if last_reported_id else 'N/A'}
+------------------------------
+"""
+        
         toggle_status = 'pause' if status == 'active' else 'start'
         
         keyboard = [
@@ -561,16 +609,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             [InlineKeyboardButton("Back ↩️", callback_data='add_channel_list')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(f"Manage channel: {channel_link}", reply_markup=reply_markup)
+        await query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
     
     elif query.data.startswith('toggle_channel_'):
         channel_link = query.data.split('_', 2)[-1]
-        channel_info = next((ch for ch in get_all_channels_from_db() if ch[0] == channel_link), None)
+        channel_info = get_channel_info_from_db(channel_link)
         if not channel_info:
             await query.edit_message_text("Channel not found.")
             return
             
-        current_status = channel_info[5]
+        current_status = channel_info[8]
         new_status = 'paused' if current_status == 'active' else 'active'
         update_channel_status(channel_link, new_status)
         
@@ -584,13 +632,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         channel_link = query.data.split('_', 3)[-1]
         records = get_last_report_records(channel_link)
         if not records:
-            await query.edit_message_text("No report records found for this channel.")
+            await query.edit_message_text("❌ No report records found for this channel.")
             return
         
         response_text = f"**Last 5 Report Records for {channel_link}:**\n\n"
         for record in records:
             response_text += f"**Timestamp:** {record['timestamp']}\n"
             response_text += f"**Message ID:** {record['message_id']}\n"
+            response_text += f"**Status:** {'✅ Success' if record['status'] == 'Success' else '❌ Failed'}\n"
             response_text += f"**API Response:** `{record['response']}`\n"
             response_text += "--------------------------------------\n"
         
@@ -1063,7 +1112,7 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
                 response_message += f"Original api response: {str(result)}"
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
-                add_report_record(channel_name, message_id, result)
+                add_report_record(channel_name, message_id, result, 'Success')
             else:
                 entity = await client.get_entity(target_link)
                 result = await client(ReportSpamRequest(peer=entity))
@@ -1071,14 +1120,17 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
                 response_message += f"Original api response: {str(result)}"
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
+                add_report_record(entity.username, None, result, 'Success')
         except asyncio.CancelledError:
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Reporting task #{task_id} was cancelled for {mask_phone_number(phone_number)}.")
             raise
         except (RPCError, FloodWaitError) as e:
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {current_report_count}/{total_report_count} from {mask_phone_number(phone_number)} failed for task #{task_id}. Reason: {e}")
+            add_report_record(target_link, message_id if 'message_id' in locals() else None, str(e), 'Failed')
         except Exception as e:
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {current_report_count}/{total_report_count} from {mask_phone_number(phone_number)} failed for task #{task_id}. Reason: {e}")
             print(traceback.format_exc())
+            add_report_record(target_link, message_id if 'message_id' in locals() else None, str(e), 'Failed')
         finally:
             await client.disconnect()
 
