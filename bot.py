@@ -286,6 +286,7 @@ def get_last_report_records(channel_link, limit=5):
 
 # --- Telethon Client & Event Handler ---
 telethon_client = TelegramClient('bot_event_handler', API_ID, API_HASH)
+live_log_users = {}
 
 @telethon_client.on(events.NewMessage)
 async def handle_new_message(event):
@@ -330,7 +331,6 @@ async def handle_new_message(event):
                         report_tasks.append(task)
                     
                     await asyncio.gather(*report_tasks)
-                    # update_reported_count(link)
         except Exception as e:
             logging.error(f"Error auto-reporting for channel {link}: {e}")
 
@@ -363,20 +363,42 @@ async def send_single_auto_report(phone_number, account_user_id, entity, message
             update_report_counts(channel_link, True, message_id)
             add_report_record(channel_link, message_id, response, "Success")
             
+            # Send live log update to all users who have it enabled
+            for user_id, channel_to_log in live_log_users.items():
+                if channel_to_log == channel_link:
+                    bot_application = Application.builder().token(BOT_TOKEN).build()
+                    await bot_application.bot.send_message(chat_id=user_id, text=f"✅ **Live Log:**\nAccount: {mask_phone_number(phone_number)}\nPost ID: {message_id}\nStatus: Success\nResponse: `{str(response)}`", parse_mode='Markdown')
+            
         except RPCError as e:
             logging.error(f"RPCError from {phone_number} on auto-report: {e}")
             update_report_counts(channel_link, False, message_id)
             add_report_record(channel_link, message_id, str(e), "Failed")
+            # Send live log update
+            for user_id, channel_to_log in live_log_users.items():
+                if channel_to_log == channel_link:
+                    bot_application = Application.builder().token(BOT_TOKEN).build()
+                    await bot_application.bot.send_message(chat_id=user_id, text=f"❌ **Live Log:**\nAccount: {mask_phone_number(phone_number)}\nPost ID: {message_id}\nStatus: Failed\nResponse: `{str(e)}`", parse_mode='Markdown')
+
         except FloodWaitError as e:
             logging.warning(f"FloodWaitError from {phone_number} on auto-report. Waiting for {e.seconds} seconds.")
             await asyncio.sleep(e.seconds)
             update_report_counts(channel_link, False, message_id)
             add_report_record(channel_link, message_id, str(e), "Failed")
+            # Send live log update
+            for user_id, channel_to_log in live_log_users.items():
+                if channel_to_log == channel_link:
+                    bot_application = Application.builder().token(BOT_TOKEN).build()
+                    await bot_application.bot.send_message(chat_id=user_id, text=f"❌ **Live Log:**\nAccount: {mask_phone_number(phone_number)}\nPost ID: {message_id}\nStatus: FloodWaitError\nResponse: `{str(e)}`", parse_mode='Markdown')
         except Exception as e:
             logging.error(f"General error from {phone_number} on auto-report: {e}")
             logging.error(traceback.format_exc())
             update_report_counts(channel_link, False, message_id)
             add_report_record(channel_link, message_id, str(e), "Failed")
+            # Send live log update
+            for user_id, channel_to_log in live_log_users.items():
+                if channel_to_log == channel_link:
+                    bot_application = Application.builder().token(BOT_TOKEN).build()
+                    await bot_application.bot.send_message(chat_id=user_id, text=f"❌ **Live Log:**\nAccount: {mask_phone_number(phone_number)}\nPost ID: {message_id}\nStatus: Failed\nResponse: `{str(e)}`", parse_mode='Markdown')
         finally:
             if client.is_connected():
                 await client.disconnect()
@@ -606,8 +628,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             [InlineKeyboardButton(f"{toggle_status.capitalize()} Reporting", callback_data=f'toggle_channel_{channel_link}')],
             [InlineKeyboardButton("Delete Channel 🗑️", callback_data=f'delete_channel_{channel_link}')],
             [InlineKeyboardButton("Check Records ✅", callback_data=f'check_channel_records_{channel_link}')],
-            [InlineKeyboardButton("Back ↩️", callback_data='add_channel_list')]
         ]
+        
+        # Add Live Log buttons
+        if user_id in live_log_users and live_log_users[user_id] == channel_link:
+            keyboard.append([InlineKeyboardButton("Hide Log ⏸️", callback_data=f'toggle_live_log_{channel_link}')])
+        else:
+            keyboard.append([InlineKeyboardButton("Check Log ▶️", callback_data=f'toggle_live_log_{channel_link}')])
+
+        keyboard.append([InlineKeyboardButton("Back ↩️", callback_data='add_channel_list')])
+
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
     
@@ -625,6 +655,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         action = "stopped" if new_status == 'paused' else "started"
         await query.edit_message_text(f"✅ Auto-reporting for channel {channel_link} has been {action}.")
         
+        await asyncio.sleep(1) # Wait for message to be sent
+        await button_handler(update, context) # Reload the menu
+
+    elif query.data.startswith('toggle_live_log_'):
+        channel_link = query.data.split('_', 3)[-1]
+        user_id = update.effective_user.id
+        
+        if user_id in live_log_users and live_log_users[user_id] == channel_link:
+            del live_log_users[user_id]
+            await query.edit_message_text(f"✅ Live logging for channel {channel_link} has been paused.")
+        else:
+            live_log_users[user_id] = channel_link
+            await query.edit_message_text(f"✅ Live logging for channel {channel_link} has been started. You will now receive real-time updates for new reports.")
+
         await asyncio.sleep(1) # Wait for message to be sent
         await button_handler(update, context) # Reload the menu
 
