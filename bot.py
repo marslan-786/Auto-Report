@@ -108,7 +108,7 @@ def load_email_accounts():
     with open(EMAIL_LIST_FILE, 'r') as f:
         for line in f:
             line = line.strip()
-            if not line or ':' in line:
+            if not line or ':' not in line:
                 continue
             email, password = line.split(':', 1)
             accounts.append({'email': email, 'password': password})
@@ -804,9 +804,8 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected: {report_type_text}. Skipping.")
                     return
                 
-                # --- FIX APPLIED HERE: Using 'option' parameter as per the library code you provided.
-                # The 'option' parameter expects the constructor ID in bytes.
-                option_bytes = report_reason_obj.CONSTRUCTOR_ID.to_bytes(4, byteorder='little')
+                # --- FIX APPLIED HERE: Using the full bytes representation of the report reason object
+                option_bytes = report_reason_obj._bytes()
 
                 result = await client(ReportRequest(
                     peer=entity,
@@ -976,4 +975,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
