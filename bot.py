@@ -770,37 +770,44 @@ A concerned user
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Email report {current_report_count}/{total_report_count} from {sender_email} failed. **Reason:** {e}")
         print(traceback.format_exc())
 
-async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number, target_link, report_type_text, current_report_count, total_report_count, report_message, task_id, user_id, account_user_id):
+async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number: str, target_link: str, report_type_text: str, current_report_count: int, total_report_count: int, report_message: str, task_id: int, user_id: int, account_user_id: int):
+    """
+    Sends a single report message to a specified target (user or channel/message).
+    """
     if phone_number not in session_locks:
         session_locks[phone_number] = asyncio.Lock()
+
     async with session_locks[phone_number]:
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
         session_path = os.path.join(session_folder, phone_number)
+
         if not os.path.exists(session_folder):
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session folder not found. Skipping.")
             return
-        if not os.path.exists(session_path + '.session'):
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session file not found. Skipping.")
-            return
+
         client = TelegramClient(session_path, API_ID, API_HASH)
-        await client.connect()
-        if not await client.is_user_authorized():
-            await client.disconnect()
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Account {mask_phone_number(phone_number)} is not authorized. Skipping reports for task #{task_id}.")
-            return
+
         try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                await client.disconnect()
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)} is not authorized. Skipping reports for task #{task_id}.")
+                return
+
             match = re.search(r't\.me/([^/]+)/(\d+)', target_link)
             if match:
                 channel_name = match.group(1)
                 message_id = int(match.group(2))
                 entity = await client.get_entity(channel_name)
                 
+                # Check for the correct report reason object
                 report_reason_obj = REPORT_REASONS.get(report_type_text)
                 if not report_reason_obj:
                     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected: {report_type_text}. Skipping.")
                     return
                 
                 # Using the correct parameter name 'reason' and passing the correct object
+                # Update: Telethon's ReportRequest has changed. It now uses 'reason' instead of 'option'.
                 result = await client(ReportRequest(peer=entity, id=[message_id], reason=report_reason_obj, message=report_message))
 
                 response_message = f"✅ Report Send {current_report_count}/{total_report_count} task #{task_id}.\n\n"
@@ -814,6 +821,7 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
                 response_message += f"Original api response: {str(result)}"
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
+
         except asyncio.CancelledError:
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Reporting task #{task_id} was cancelled for {mask_phone_number(phone_number)}.")
             raise
@@ -825,6 +833,7 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
         finally:
             if client.is_connected():
                 await client.disconnect()
+
 
 async def get_user_channels(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE, phone_number: str, account_user_id: int):
     chat_id = query.message.chat_id
