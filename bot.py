@@ -806,20 +806,20 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected: {report_type_text}. Skipping.")
                     return
                 
-                # Using the correct parameter name 'reason' and passing the correct object
-                # Update: Telethon's ReportRequest has changed. It now uses 'reason' instead of 'option'.
-                result = await client(ReportRequest(peer=entity, id=[message_id], reason=report_reason_obj, message=report_message))
+                # --- FIX APPLIED HERE ---
+                # Now using the correct method to report a message.
+                # The 'reason' and 'message' are separate parameters in this method.
+                await client.report_messages(entity, message_id, reason=report_reason_obj, message=report_message)
 
                 response_message = f"✅ Report Send {current_report_count}/{total_report_count} task #{task_id}.\n\n"
                 response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
-                response_message += f"Original api response: {str(result)}"
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
             else:
                 entity = await client.get_entity(target_link)
-                result = await client(ReportSpamRequest(peer=entity))
+                await client(ReportSpamRequest(peer=entity))
+                
                 response_message = f"✅ Report Send {current_report_count}/{total_report_count} task #{task_id}.\n\n"
                 response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
-                response_message += f"Original api response: {str(result)}"
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
 
         except asyncio.CancelledError:
@@ -833,7 +833,6 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
         finally:
             if client.is_connected():
                 await client.disconnect()
-
 
 async def get_user_channels(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE, phone_number: str, account_user_id: int):
     chat_id = query.message.chat_id
