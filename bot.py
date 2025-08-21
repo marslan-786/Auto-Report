@@ -1,5 +1,3 @@
-# main_bot.py
-
 import os
 import asyncio
 import re
@@ -110,7 +108,7 @@ def load_email_accounts():
     with open(EMAIL_LIST_FILE, 'r') as f:
         for line in f:
             line = line.strip()
-            if not line or ':' not in line:
+            if not line or ':' in line:
                 continue
             email, password = line.split(':', 1)
             accounts.append({'email': email, 'password': password})
@@ -800,31 +798,33 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 message_id = int(match.group(2))
                 entity = await client.get_entity(channel_name)
                 
+                # Check for the correct report reason object
                 report_reason_obj = REPORT_REASONS.get(report_type_text)
                 if not report_reason_obj:
                     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected: {report_type_text}. Skipping.")
                     return
                 
-                # --- FIX APPLIED HERE ---
-                # This is the correct way to use ReportRequest. We first get the entity,
-                # then use the proper function to make the report.
-                
-                await client(ReportRequest(
+                # --- FIX APPLIED HERE: Using 'option' parameter as per the library code you provided.
+                # The 'option' parameter expects the constructor ID in bytes.
+                option_bytes = report_reason_obj.CONSTRUCTOR_ID.to_bytes(4, byteorder='little')
+
+                result = await client(ReportRequest(
                     peer=entity,
                     id=[message_id],
-                    reason=report_reason_obj,
+                    option=option_bytes,
                     message=report_message
                 ))
 
                 response_message = f"✅ Report Send {current_report_count}/{total_report_count} task #{task_id}.\n\n"
                 response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
+                response_message += f"Original api response: {str(result)}"
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
             else:
                 entity = await client.get_entity(target_link)
-                await client(ReportSpamRequest(peer=entity))
-                
+                result = await client(ReportSpamRequest(peer=entity))
                 response_message = f"✅ Report Send {current_report_count}/{total_report_count} task #{task_id}.\n\n"
                 response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
+                response_message += f"Original api response: {str(result)}"
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
 
         except asyncio.CancelledError:
@@ -838,6 +838,7 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
         finally:
             if client.is_connected():
                 await client.disconnect()
+
 
 async def get_user_channels(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE, phone_number: str, account_user_id: int):
     chat_id = query.message.chat_id
