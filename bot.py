@@ -149,7 +149,7 @@ def load_email_accounts():
     with open(EMAIL_LIST_FILE, 'r') as f:
         for line in f:
             line = line.strip()
-            if not line or ':' in line:
+            if not line or ':' not in line:
                 continue
             email, password = line.split(':', 1)
             accounts.append({'email': email, 'password': password})
@@ -285,15 +285,17 @@ def get_last_report_records(channel_link, limit=5):
 
 
 # --- Telethon Client & Event Handler ---
-telethon_client = TelegramClient('bot_event_handler', API_ID, API_HASH)
+# Use a single telethon client for event listening
+telethon_client = TelegramClient('live_event_listener', API_ID, API_HASH)
 live_log_users = {}
 
-@telethon_client.on(events.NewMessage)
-async def handle_new_message(event):
+@telethon_client.on(events.NewMessage(incoming=True, func=lambda e: e.is_channel))
+async def handle_new_channel_message(event):
     if not event.is_channel:
         return
-    
+
     channels_to_report = get_all_channels_from_db()
+    
     for channel in channels_to_report:
         link, report_type_text, message, count, reported_count, successful_reports, failed_reports, last_reported_id, status = channel
         
@@ -326,6 +328,7 @@ async def handle_new_message(event):
                         return
 
                     report_tasks = []
+                    # Create tasks to report from all logged in accounts
                     for phone_number, account_user_id in accounts_to_use:
                         task = asyncio.create_task(send_single_auto_report(phone_number, account_user_id, entity, event.message.id, report_option_byte, message, link))
                         report_tasks.append(task)
@@ -1176,7 +1179,8 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
             print(traceback.format_exc())
             add_report_record(target_link, message_id if 'message_id' in locals() else None, str(e), 'Failed')
         finally:
-            await client.disconnect()
+            if client.is_connected():
+                await client.disconnect()
 
 async def get_user_channels(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE, phone_number: str, account_user_id: int):
     chat_id = query.message.chat_id
@@ -1299,16 +1303,20 @@ async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE, pho
         await query.edit_message_text(f"❌ An error occurred while deleting the session file: {e}")
     await manage_accounts(update, context)
 
-def main() -> None:
+async def main_run() -> None:
     init_files()
     application = Application.builder().token(BOT_TOKEN).build()
+    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("stop", stop_command_handler))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO & ~filters.COMMAND, message_handler))
-    loop = asyncio.get_event_loop()
-    loop.create_task(application.run_polling())
-    loop.run_until_complete(telethon_client.run_until_disconnected())
+
+    # Start both clients concurrently
+    await asyncio.gather(
+        application.run_polling(),
+        telethon_client.start(bot_token=BOT_TOKEN)
+    )
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main_run())
