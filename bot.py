@@ -1357,26 +1357,33 @@ async def main_run() -> None:
     application_task = asyncio.create_task(application.run_polling())
 
     # Initialize and connect the single Telethon client
-    # The session file for this client should be placed in `sessions/OWNER_ID/DETECTION_SESSION_PHONE.session`
     detection_session_path = os.path.join(SESSION_FOLDER, str(OWNER_ID), DETECTION_SESSION_PHONE)
     telethon_client = TelegramClient(detection_session_path, API_ID, API_HASH)
     
     try:
+        # Check if the detection account is authorized
         if not await telethon_client.is_user_authorized():
             logging.warning(f"Detection session file not found or not authorized for {DETECTION_SESSION_PHONE}. Please login this account via the bot menu.")
             await send_owner_error(f"⚠️ **Warning:**\nDetection session file not found or not authorized for `{DETECTION_SESSION_PHONE}`. Please login this account via the bot menu to enable channel post detection.")
             # We will still run the bot application even if the detection client is not ready
+        
+        # Start the Telethon client in a separate task
+        telethon_task = asyncio.create_task(telethon_client.run_until_disconnected())
+        
+        # Use asyncio.gather() to run both tasks concurrently
+        await asyncio.gather(application_task, telethon_task)
+        
     except SessionPasswordNeededError:
         logging.error("Two-factor authentication is enabled on the detection account. Please log in again and provide the password.")
         await send_owner_error(f"❌ **Error:**\nTwo-factor authentication is enabled on the detection account `{DETECTION_SESSION_PHONE}`. Please log in again and provide the password.")
+        # If Telethon client fails, we only run the Telegram.ext bot
+        await application_task
     except Exception as e:
         logging.error(f"Failed to connect Telethon client for detection: {e}")
         await send_owner_error(f"❌ **Critical Error:**\nFailed to connect Telethon client for detection. Post detection will not work.\n\n**Error Details:**\n`{type(e).__name__}: {str(e)}`")
-    
-    telethon_task = asyncio.create_task(telethon_client.run_until_disconnected())
-    
-    await asyncio.gather(application_task, telethon_task)
+        # If Telethon client fails, we only run the Telegram.ext bot
+        await application_task
 
+# Main entry point for the script
 if __name__ == '__main__':
     asyncio.run(main_run())
-
