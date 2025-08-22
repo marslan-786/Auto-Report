@@ -5,43 +5,37 @@ import zipfile
 import io
 import json
 from datetime import datetime, timedelta
-from telethon import TelegramClient, events
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telethon import TelegramClient
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from telethon.tl.functions.messages import ReportRequest, ReportSpamRequest, ImportChatInviteRequest, GetDialogsRequest
-from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.messages import ReportRequest, ReportSpamRequest, ImportChatInviteRequest
 from telethon.tl.types import (
     InputPeerChannel, Channel, ReportResultChooseOption, MessageReportOption,
-    InputReportReasonChildAbuse, InputReportReasonCopyright, InputReportReasonFake,
-    InputReportReasonGeoIrrelevant, InputReportReasonIllegalDrugs, InputReportReasonOther,
-    InputReportReasonPersonalDetails, InputReportReasonPornography, InputReportReasonSpam,
-    InputReportReasonViolence
+    InputReportReasonSpam, InputReportReasonViolence, InputReportReasonChildAbuse,
+    InputReportReasonIllegalDrugs, InputReportReasonPornography, InputReportReasonPersonalDetails,
+    InputReportReasonCopyright, InputReportReasonFake, InputReportReasonOther
 )
-from telethon.errors import RPCError, FloodWaitError, UserAlreadyParticipantError, SessionPasswordNeededError
+from telethon.errors import RPCError, FloodWaitError, UserAlreadyParticipantError
 import traceback
 import random
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.image import MIMEImage
 import logging
 
-# Set up logging for better debugging
+# Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # --- OWNER DETAILS & BOT CONFIGURATION ---
-OWNER_ID = 8167904992 # Replace with your actual Telegram Chat ID
-OWNER_USERNAME = "whatsapp_offcial" # Replace with your actual Telegram Username
+OWNER_ID = 8167904992  # Replace with your actual Telegram Chat ID
+OWNER_USERNAME = "whatsapp_offcial"  # Replace with your actual Telegram Username
 
 API_ID = 94575
-API_HASH = 'a3406de8d171bb422bb6ddf3bbd800e9'
+API_HASH = 'a3406de8d171bb422bb6ddf3bbd800e2'
 BOT_TOKEN = '8324191756:AAF28XJJ9wSO2jZ5iFIqlrdEbjqHFX190Pk'
 
 SESSION_FOLDER = 'sessions'
 GRANTED_USERS_FILE = 'granted_users.json'
-EMAIL_LIST_FILE = 'email.txt'
 
 # --- NEW: Mapping human-readable strings to Telegram's InputReportReason types ---
+# This is the correct way to specify report reasons
 REPORT_REASONS = {
     'Scam or spam': InputReportReasonSpam(),
     'Violence': InputReportReasonViolence(),
@@ -49,28 +43,40 @@ REPORT_REASONS = {
     'Illegal goods': InputReportReasonIllegalDrugs(),
     'Illegal adult content': InputReportReasonPornography(),
     'Personal data': InputReportReasonPersonalDetails(),
-    'Terrorism': InputReportReasonViolence(), # Using a similar category
+    'Terrorism': InputReportReasonViolence(),
     'Copyright': InputReportReasonCopyright(),
     'Other': InputReportReasonOther(),
-    'I don’t like it': InputReportReasonOther(), # Changed from InputReportReasonUnwanted()
-    'It’s not illegal, but must be taken down': InputReportReasonOther(), # Changed from InputReportReasonUnwanted()
-    'Phishing': InputReportReasonSpam(),
-    'Impersonation': InputReportReasonFake(),
-    'Fraudulent sales': InputReportReasonSpam(),
-    'Spam': InputReportReasonSpam(),
-    'Weapons': InputReportReasonIllegalDrugs(),
-    'Drugs': InputReportReasonIllegalDrugs(),
-    'Fake documents': InputReportReasonFake(),
-    'Counterfeit money': InputReportReasonFake(),
-    'Other goods': InputReportReasonIllegalDrugs(),
-    'Nudity': InputReportReasonPornography(),
-    'Sexual abuse': InputReportReasonChildAbuse(), # Adjusted for a closer fit
-    'Child sexual abuse material': InputReportReasonChildAbuse(),
-    'Other adult content': InputReportReasonPornography(),
-    'Identity theft': InputReportReasonFake(),
-    'Leaked phone number': InputReportReasonPersonalDetails(),
-    'Leaked address': InputReportReasonPersonalDetails(),
-    'Other personal data': InputReportReasonPersonalDetails()
+    'I don’t like it': InputReportReasonOther(),
+    'It’s not illegal, but must be taken down': InputReportReasonOther()
+}
+
+# --- NEW: Mapping for specific report subtypes ---
+REPORT_SUBTYPES = {
+    'Scam or spam': {
+        'Phishing': InputReportReasonSpam(),
+        'Impersonation': InputReportReasonFake(),
+        'Fraudulent sales': InputReportReasonSpam(),
+        'Spam': InputReportReasonSpam()
+    },
+    'Illegal goods': {
+        'Weapons': InputReportReasonIllegalDrugs(),
+        'Drugs': InputReportReasonIllegalDrugs(),
+        'Fake documents': InputReportReasonFake(),
+        'Counterfeit money': InputReportReasonFake(),
+        'Other goods': InputReportReasonIllegalDrugs()
+    },
+    'Illegal adult content': {
+        'Nudity': InputReportReasonPornography(),
+        'Sexual abuse': InputReportReasonChildAbuse(),
+        'Child sexual abuse material': InputReportReasonChildAbuse(),
+        'Other adult content': InputReportReasonPornography()
+    },
+    'Personal data': {
+        'Identity theft': InputReportReasonFake(),
+        'Leaked phone number': InputReportReasonPersonalDetails(),
+        'Leaked address': InputReportReasonPersonalDetails(),
+        'Other personal data': InputReportReasonPersonalDetails()
+    }
 }
 
 session_locks = {}
@@ -84,9 +90,6 @@ def init_files():
     if not os.path.exists(GRANTED_USERS_FILE):
         with open(GRANTED_USERS_FILE, 'w') as f:
             json.dump([], f)
-    if not os.path.exists(EMAIL_LIST_FILE):
-        with open(EMAIL_LIST_FILE, 'w') as f:
-            f.write('')
 
 def load_granted_users():
     if not os.path.exists(GRANTED_USERS_FILE):
@@ -100,19 +103,6 @@ def load_granted_users():
 def save_granted_users(users):
     with open(GRANTED_USERS_FILE, 'w') as f:
         json.dump(users, f, indent=4)
-
-def load_email_accounts():
-    accounts = []
-    if not os.path.exists(EMAIL_LIST_FILE):
-        return accounts
-    with open(EMAIL_LIST_FILE, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line or ':' not in line:
-                continue
-            email, password = line.split(':', 1)
-            accounts.append({'email': email, 'password': password})
-    return accounts
 
 def get_granted_user_info(user_id):
     granted_users = load_granted_users()
@@ -133,15 +123,6 @@ def mask_phone_number(phone_number):
     if len(phone_number) < 8:
         return phone_number
     return phone_number[:5] + '***' + phone_number[-5:]
-
-def get_email_server(email):
-    if '@gmail.com' in email:
-        return 'smtp.gmail.com', 587
-    elif '@yahoo.com' in email:
-        return 'smtp.mail.yahoo.com', 587
-    elif '@outlook.com' in email or '@hotmail.com' in email:
-        return 'smtp-mail.outlook.com', 587
-    return None, None
 
 def get_logged_in_accounts(user_id, all_access=False):
     accounts = []
@@ -177,8 +158,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             [InlineKeyboardButton("Login 🔐", callback_data='login_start')],
             [InlineKeyboardButton("Join Channel ➕", callback_data='join_channel')],
             [InlineKeyboardButton("Report Illegal Content 🚨", callback_data='report_start')],
-            [InlineKeyboardButton("Report via Email 📧", callback_data='report_email_start')],
             [InlineKeyboardButton("My Accounts 👤", callback_data='my_accounts')],
+            [InlineKeyboardButton("My Channels 👥", callback_data='my_channels')],
             [InlineKeyboardButton("Backup 💾", callback_data='backup_sessions')],
             [InlineKeyboardButton("Manage Users 🗂️", callback_data='manage_users')],
             [InlineKeyboardButton("Grant Access ✨", callback_data='grant_access')]
@@ -187,18 +168,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif is_user_granted:
         keyboard = [
             [InlineKeyboardButton("Login 🔐", callback_data='login_start')],
-            [InlineKeyboardButton("Join Channel ➕", callback_data='join_channel')],
             [InlineKeyboardButton("Report Illegal Content 🚨", callback_data='report_start')],
-            [InlineKeyboardButton("Report via Email 📧", callback_data='report_email_start')],
         ]
-        if all_access:
+        if not all_access:
             keyboard.append([InlineKeyboardButton("My Accounts 👤", callback_data='my_accounts')])
+            keyboard.append([InlineKeyboardButton("My Channels 👥", callback_data='my_channels')])
+
         text = 'Hello! You have limited access. Please choose an option:'
     else:
         keyboard = [
             [InlineKeyboardButton("Login 🔐", callback_data='login_start')],
-            [InlineKeyboardButton("Report Illegal Content 🚨", callback_data='report_start')],
-            [InlineKeyboardButton("Report via Email 📧", callback_data='report_email_start')],
+            [InlineKeyboardButton("Report Illegal Content 🚨", callback_data='report_start')]
         ]
         text = 'Welcome! You can log in your accounts and start using the bot.'
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -209,99 +189,39 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.answer()
     user_id = update.effective_user.id
     
-    if query.data == 'start':
-        await start(update, context)
-        return
-
-    # Check for user access before proceeding with certain actions
-    if not is_granted_user(user_id) and not is_owner(user_id):
-        if query.data not in ['login_start', 'report_start', 'report_email_start']:
-            await query.edit_message_text("❌ You do not have permission to use this function. Please contact the owner.")
-            return
-
+    is_user_granted_access = is_granted_user(user_id)
+    
     if query.data == 'login_start':
         await query.edit_message_text(text="Please send your phone number with country code (e.g., +923001234567) to log in.")
         context.user_data['state'] = 'awaiting_phone_number'
     
-    elif query.data == 'join_channel':
-        await query.edit_message_text(text="Please send the public or private channel invite link to join.")
-        context.user_data['state'] = 'awaiting_join_link'
-
     elif query.data == 'report_start':
         await query.edit_message_text(text="Please send the link of the channel or a post you want to report.")
         context.user_data['state'] = 'awaiting_link'
-        context.user_data['report_method'] = 'session'
-
-    elif query.data == 'report_email_start':
-        await query.edit_message_text(text="Please send the link of the channel or a post you want to report.")
-        context.user_data['state'] = 'awaiting_link'
-        context.user_data['report_method'] = 'email'
 
     elif query.data.startswith('report_type_'):
         report_type_text = query.data.split('_', 2)[-1]
         context.user_data['report_type_text'] = report_type_text
         
-        # Mapping for main report types
-        REPORT_OPTIONS = {
-            'Scam or spam', 'Violence', 'Child abuse', 'Illegal goods', 'Illegal adult content', 
-            'Personal data', 'Terrorism', 'Copyright', 'Other', 'I don’t like it', 
-            'It’s not illegal, but must be taken down'
-        }
-        
-        # Mapping for specific report subtypes
-        REPORT_SUBTYPES = {
-            'Scam or spam': {
-                'Phishing',
-                'Impersonation',
-                'Fraudulent sales',
-                'Spam'
-            },
-            'Illegal goods': {
-                'Weapons',
-                'Drugs',
-                'Fake documents',
-                'Counterfeit money',
-                'Other goods'
-            },
-            'Illegal adult content': {
-                'Nudity',
-                'Sexual abuse',
-                'Child sexual abuse material',
-                'Other adult content'
-            },
-            'Personal data': {
-                'Identity theft',
-                'Leaked phone number',
-                'Leaked address',
-                'Other personal data'
-            }
-        }
-        
         if report_type_text in REPORT_SUBTYPES:
             subtype_options = REPORT_SUBTYPES[report_type_text]
-            keyboard_buttons = [[InlineKeyboardButton(text=opt, callback_data=f'report_subtype_{opt}')] for opt in subtype_options]
+            keyboard_buttons = [[InlineKeyboardButton(text=opt, callback_data=f'report_subtype_{opt}')] for opt in subtype_options.keys()]
             reply_markup = InlineKeyboardMarkup(keyboard_buttons)
             await query.edit_message_text(f"Please choose a specific reason for '{report_type_text}':", reply_markup=reply_markup)
+            context.user_data['state'] = 'awaiting_report_type_selection'
         else:
-            if context.user_data.get('report_method') == 'email':
-                await query.edit_message_text(f"You selected '{report_type_text}'. Now, please send the screenshot of the content you want to report.\n\nAfter sending the screenshot, provide a brief message and the number of times to report (e.g., 'Violent content 5').")
-                context.user_data['state'] = 'awaiting_photo_or_comment'
-            else:
-                await query.edit_message_text(f"You selected '{report_type_text}'. Now, please provide a brief message and the number of times to report (e.g., 'Violent content 5').")
-                context.user_data['state'] = 'awaiting_report_comment_and_count'
+            await query.edit_message_text(f"You selected '{report_type_text}'. Now, please provide a brief message and the number of times to report (e.g., 'Violent content 5').")
+            context.user_data['state'] = 'awaiting_report_comment_and_count'
             
     elif query.data.startswith('report_subtype_'):
         report_subtype_text = query.data.split('_', 2)[-1]
         context.user_data['report_type_text'] = report_subtype_text
-        if context.user_data.get('report_method') == 'email':
-            await query.edit_message_text(f"You selected '{report_subtype_text}'. Now, please send the screenshot of the content you want to report.\n\nAfter sending the screenshot, provide a brief message and the number of times to report (e.g., 'Violent content 5').")
-            context.user_data['state'] = 'awaiting_photo_or_comment'
-        else:
-            await query.edit_message_text(f"You selected '{report_subtype_text}'. Now, please provide a brief message and the number of times to report (e.g., 'Violent content 5').")
-            context.user_data['state'] = 'awaiting_report_comment_and_count'
+        await query.edit_message_text(f"You selected '{report_subtype_text}'. Now, please provide a brief message and the number of times to report (e.g., 'Violent content 5').")
+        context.user_data['state'] = 'awaiting_report_comment_and_count'
 
     elif query.data == 'my_accounts':
-        if not is_owner(user_id) and not get_granted_user_info(user_id).get('all_access'):
+        user_info = get_granted_user_info(user_id)
+        if not is_owner(user_id) and user_info and user_info.get('all_access'):
             await query.edit_message_text("You do not have permission to view other users' accounts.")
             return
         await manage_accounts(update, context)
@@ -357,6 +277,38 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
         await delete_account(update, context, phone_number, account_user_id)
+
+    elif query.data == 'my_channels':
+        user_info = get_granted_user_info(user_id)
+        if not is_owner(user_id) and user_info and user_info.get('all_access'):
+            await query.edit_message_text("You do not have permission to view other users' channels.")
+            return
+
+        accounts = get_logged_in_accounts(user_id, is_owner(user_id) or is_user_granted_access)
+        if not accounts:
+            await query.edit_message_text("No accounts are currently logged in.")
+            return
+        
+        keyboard = [[InlineKeyboardButton(text=f"{acc[0]} (User: {acc[1]})", callback_data=f'show_channels_{acc[0]}_{acc[1]}')] for acc in accounts]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("Please select an account to view its channels:", reply_markup=reply_markup)
+
+    elif query.data.startswith('show_channels_'):
+        try:
+            parts = query.data.split('_')
+            if len(parts) != 3:
+                await query.edit_message_text("❌ There was an error processing the request. Please try again.")
+                return
+                
+            _, phone_number, account_user_id_str = parts
+            account_user_id = int(account_user_id_str)
+            
+        except (ValueError, IndexError):
+            await query.edit_message_text("❌ Could not parse account details. Please try again or contact support.")
+            return
+            
+        await query.edit_message_text(f"Fetching channels for account {phone_number}. This may take a moment...")
+        await get_user_channels(query, context, phone_number, account_user_id)
         
     elif query.data == 'backup_sessions' and is_owner(user_id):
         await query.edit_message_text("Creating a full project backup. This may take a moment...")
@@ -380,6 +332,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data['state'] = 'awaiting_reset_info'
         context.user_data['user_to_reset'] = user_to_reset
         await query.edit_message_text(f"Please send the new duration for user {user_to_reset} (e.g., `1h`, `1d`).")
+        
+    elif query.data == 'start':
+        await start(update, context)
+
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global task_counter
@@ -387,88 +343,114 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_state = context.user_data.get('state')
     user_id = update.effective_user.id
     
-    if user_state == 'awaiting_grant_info' and is_owner(user_id):
-        parts = user_message.split()
-        if not (2 <= len(parts) <= 3):
-            await update.message.reply_text("Invalid format. Please provide the ID/Username, duration, and optionally 'true' (e.g., `123456789 1h true`).")
-            context.user_data['state'] = None
-            return
-        target_str, duration_str = parts[0], parts[1]
-        all_access = parts[2].lower() == 'true' if len(parts) == 3 else False
-        
-        try:
-            if not target_str.isdigit():
-                chat_id = (await context.bot.get_chat(target_str)).id
-            else:
-                chat_id = int(target_str)
-        except Exception:
-            await update.message.reply_text("Could not find a user with that ID or Username. Please try again.")
-            context.user_data['state'] = None
-            return
-        try:
-            unit = duration_str[-1].lower()
-            value = int(duration_str[:-1])
-            if unit == 'h':
-                delta = timedelta(hours=value)
-            elif unit == 'd':
-                delta = timedelta(days=value)
-            else:
-                await update.message.reply_text("Invalid duration format. Use 'h' for hours or 'd' for days (e.g., '1h', '2d').")
+    # --- Owner Only States ---
+    if is_owner(user_id):
+        if user_state == 'awaiting_grant_info':
+            parts = user_message.split()
+            if not (2 <= len(parts) <= 3):
+                await update.message.reply_text("Invalid format. Please provide the ID/Username, duration, and optionally 'true' (e.g., `123456789 1h true`).")
                 context.user_data['state'] = None
                 return
-            expires_at = (datetime.now() + delta).isoformat()
-            granted_users = load_granted_users()
-            user_found = False
-            for user in granted_users:
-                if user['user_id'] == chat_id:
-                    user['expires_at'] = expires_at
-                    user['all_access'] = all_access
-                    user_found = True
-                    break
-            if not user_found:
-                granted_users.append({'user_id': chat_id, 'expires_at': expires_at, 'all_access': all_access})
-            save_granted_users(granted_users)
-            access_type = "full access" if all_access else "limited access"
-            await update.message.reply_text(f"✅ Access granted to user ID {chat_id} with {access_type} until {datetime.fromisoformat(expires_at).strftime('%Y-%m-%d %H:%M')}.")
-            context.user_data['state'] = None
-        except (ValueError, IndexError):
-            await update.message.reply_text("Invalid format. Please provide the ID and duration (e.g., `123456789 1h`).")
-            context.user_data['state'] = None
-    
-    elif user_state == 'awaiting_reset_info' and is_owner(user_id):
-        user_to_reset = context.user_data.get('user_to_reset')
-        duration_str = user_message.strip()
-        try:
-            unit = duration_str[-1].lower()
-            value = int(duration_str[:-1])
-            if unit == 'h':
-                delta = timedelta(hours=value)
-            elif unit == 'd':
-                delta = timedelta(days=value)
-            else:
-                await update.message.reply_text("Invalid duration format. Use 'h' for hours or 'd' for days (e.g., '1h', '2d').")
-                context.user_data['state'] = 'awaiting_reset_info'
-                return
-            expires_at = (datetime.now() + delta).isoformat()
-            granted_users = load_granted_users()
-            user_found = False
-            for user in granted_users:
-                if user['user_id'] == user_to_reset:
-                    user['expires_at'] = expires_at
-                    user_found = True
-                    break
-            if user_found:
-                save_granted_users(granted_users)
-                await update.message.reply_text(f"✅ Access for user {user_to_reset} has been reset until {datetime.fromisoformat(expires_at).strftime('%Y-%m-%d %H:%M')}.")
-            else:
-                await update.message.reply_text(f"User {user_to_reset} not found in granted list.")
-            context.user_data['state'] = None
-            context.user_data.pop('user_to_reset', None)
-        except (ValueError, IndexError):
-            await update.message.reply_text("Invalid duration format. Please provide a duration (e.g., '1h', '2d').")
-            context.user_data['state'] = 'awaiting_reset_info'
 
-    elif user_state == 'awaiting_phone_number':
+            target_str, duration_str = parts[0], parts[1]
+            all_access = parts[2].lower() == 'true' if len(parts) == 3 else False
+            
+            try:
+                if not target_str.isdigit():
+                    chat_id = (await context.bot.get_chat(target_str)).id
+                else:
+                    chat_id = int(target_str)
+            except Exception:
+                await update.message.reply_text("Could not find a user with that ID or Username. Please try again.")
+                context.user_data['state'] = None
+                return
+
+            try:
+                unit = duration_str[-1].lower()
+                value = int(duration_str[:-1])
+                
+                if unit == 'h':
+                    delta = timedelta(hours=value)
+                elif unit == 'd':
+                    delta = timedelta(days=value)
+                else:
+                    await update.message.reply_text("Invalid duration format. Use 'h' for hours or 'd' for days (e.g., '1h', '2d').")
+                    context.user_data['state'] = None
+                    return
+
+                expires_at = (datetime.now() + delta).isoformat()
+                
+                granted_users = load_granted_users()
+                user_found = False
+                for user in granted_users:
+                    if user['user_id'] == chat_id:
+                        user['expires_at'] = expires_at
+                        user['all_access'] = all_access
+                        user_found = True
+                        break
+                
+                if not user_found:
+                    granted_users.append({'user_id': chat_id, 'expires_at': expires_at, 'all_access': all_access})
+                
+                save_granted_users(granted_users)
+                access_type = "full access" if all_access else "limited access"
+                await update.message.reply_text(f"✅ Access granted to user ID {chat_id} with {access_type} until {datetime.fromisoformat(expires_at).strftime('%Y-%m-%d %H:%M')}.")
+                context.user_data['state'] = None
+
+            except (ValueError, IndexError):
+                await update.message.reply_text("Invalid format. Please provide the ID and duration (e.g., `123456789 1h`).")
+                context.user_data['state'] = None
+
+        elif user_state == 'awaiting_reset_info':
+            user_to_reset = context.user_data.get('user_to_reset')
+            duration_str = user_message.strip()
+            try:
+                unit = duration_str[-1].lower()
+                value = int(duration_str[:-1])
+                
+                if unit == 'h':
+                    delta = timedelta(hours=value)
+                elif unit == 'd':
+                    delta = timedelta(days=value)
+                else:
+                    await update.message.reply_text("Invalid duration format. Use 'h' for hours or 'd' for days (e.g., '1h', '2d').")
+                    context.user_data['state'] = 'awaiting_reset_info'
+                    return
+
+                expires_at = (datetime.now() + delta).isoformat()
+                granted_users = load_granted_users()
+                user_found = False
+                for user in granted_users:
+                    if user['user_id'] == user_to_reset:
+                        user['expires_at'] = expires_at
+                        user_found = True
+                        break
+                
+                if user_found:
+                    save_granted_users(granted_users)
+                    await update.message.reply_text(f"✅ Access for user {user_to_reset} has been reset until {datetime.fromisoformat(expires_at).strftime('%Y-%m-%d %H:%M')}.")
+                else:
+                    await update.message.reply_text(f"User {user_to_reset} not found in granted list.")
+                
+                context.user_data['state'] = None
+                context.user_data.pop('user_to_reset', None)
+            except (ValueError, IndexError):
+                await update.message.reply_text("Invalid duration format. Please provide a duration (e.g., '1h', '2d').")
+                context.user_data['state'] = 'awaiting_reset_info'
+
+        elif user_state == 'awaiting_join_link':
+            invite_link = user_message
+            accounts = get_logged_in_accounts(user_id, all_access=True)
+            if not accounts:
+                await update.message.reply_text("No accounts logged in to join channels.")
+                return
+
+            task = asyncio.create_task(join_channels_in_background(update, context, invite_link, accounts))
+            await update.message.reply_text("All join requests have been sent. They are now processing in the background.")
+            context.user_data['state'] = None
+
+    # --- All Users States ---
+    if user_state == 'awaiting_phone_number':
         phone_number = user_message
         try:
             user_session_folder = os.path.join(SESSION_FOLDER, str(user_id))
@@ -514,187 +496,77 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             context.user_data['state'] = None
             context.user_data.pop('client', None)
             context.user_data.pop('phone_number', None)
-        except SessionPasswordNeededError:
-            await update.message.reply_text("Two-factor authentication is enabled. Please enter your password.")
-            context.user_data['state'] = 'awaiting_password'
         except Exception as e:
-            await update.message.reply_text(f"Invalid OTP. Please try again. Error: {e}")
-    
-    elif user_state == 'awaiting_password':
-        password = user_message
-        client = context.user_data.get('client')
-        try:
-            await client.sign_in(password=password)
-            await update.message.reply_text("Successfully logged in! Your session file has been saved.")
-            context.user_data['state'] = None
-            context.user_data.pop('client', None)
-            context.user_data.pop('phone_number', None)
-        except Exception as e:
-            await update.message.reply_text(f"Invalid password. Please try again. Error: {e}")
+            await update.message.reply_text(f"Invalid OTP. Please try again.")
             
     elif user_state == 'awaiting_link':
         context.user_data['target_link'] = user_message
-        
-        REPORT_OPTIONS = {
-            'Scam or spam', 'Violence', 'Child abuse', 'Illegal goods', 'Illegal adult content', 
-            'Personal data', 'Terrorism', 'Copyright', 'Other', 'I don’t like it', 
-            'It’s not illegal, but must be taken down'
-        }
-        
-        keyboard_buttons = [[InlineKeyboardButton(text=key, callback_data=f'report_type_{key}')] for key in REPORT_OPTIONS]
+        keyboard_buttons = [[InlineKeyboardButton(text=key, callback_data=f'report_type_{key}')] for key in REPORT_REASONS.keys()]
         reply_markup = InlineKeyboardMarkup(keyboard_buttons)
         await update.message.reply_text("Please choose a report type:", reply_markup=reply_markup)
         context.user_data['state'] = 'awaiting_report_type_selection'
-    
-    elif user_state == 'awaiting_photo_or_comment':
-        if update.message.photo:
-            photo_file_id = update.message.photo[-1].file_id
-            context.user_data['photo_file_id'] = photo_file_id
-            await update.message.reply_text("Photo received. Now, please provide a brief message and the number of times to report (e.g., 'Violent content 5').")
-            context.user_data['state'] = 'awaiting_report_comment_and_count'
-            return # Wait for the next message
-        
-        await update.message.reply_text("You have to send a screenshot first. If you want to continue without a screenshot, just send your report message and count now.")
-        context.user_data['state'] = 'awaiting_report_comment_and_count'
-    
+
     elif user_state == 'awaiting_report_comment_and_count':
         try:
-            user_message = update.message.text
             parts = user_message.rsplit(' ', 1)
             report_message = parts[0].strip()
             report_count = int(parts[1].strip())
             
             target_link = context.user_data.get('target_link')
             report_type_text = context.user_data.get('report_type_text')
-            report_method = context.user_data.get('report_method')
-            attachment = context.user_data.get('photo_file_id')
 
+            user_info = get_granted_user_info(user_id)
+            accounts_to_use = get_logged_in_accounts(user_id, is_owner(user_id) or (user_info and user_info.get('all_access')))
+            
+            if not accounts_to_use:
+                await update.message.reply_text("No accounts logged in to send reports.")
+                context.user_data['state'] = None
+                return
+            
             task_counter += 1
             task_id = task_counter
-
-            if report_method == 'session':
-                user_info = get_granted_user_info(user_id)
-                accounts_to_use = get_logged_in_accounts(user_id, is_owner(user_id) or (user_info and user_info.get('all_access')))
-                
-                if not accounts_to_use:
-                    await update.message.reply_text("No accounts logged in to send reports.")
-                    context.user_data['state'] = None
-                    return
-                
-                await update.message.reply_text(f"Starting to report '{target_link}' for you. This is task #{task_id}. It will run in the background.")
-                report_main_task = asyncio.create_task(start_reporting_process(update, context, accounts_to_use, target_link, report_type_text, report_count, report_message, task_id, user_id))
             
-            elif report_method == 'email':
-                email_accounts = load_email_accounts()
-                if not email_accounts:
-                    await update.message.reply_text("No email accounts found in `email_list.txt`. Please add accounts and try again.")
-                    context.user_data['state'] = None
-                    return
-                
-                await update.message.reply_text(f"Starting to report '{target_link}' via email. This is task #{task_id}. It will run in the background.")
-                report_main_task = asyncio.create_task(start_email_reporting_process(update, context, email_accounts, target_link, report_type_text, report_count, report_message, task_id, attachment))
+            await update.message.reply_text(f"Starting to report '{target_link}' for you. This is task #{task_id}. It will run in the background.")
+
+            report_main_task = asyncio.create_task(start_reporting_process(update, context, accounts_to_use, target_link, report_type_text, report_count, report_message, task_id, user_id))
             
             if user_id not in user_tasks:
                 user_tasks[user_id] = {}
             user_tasks[user_id][task_id] = report_main_task
             
             context.user_data['state'] = None
-            context.user_data.pop('photo_file_id', None)
             
         except (ValueError, IndexError):
             await update.message.reply_text("Please provide a comment and a number separated by a space (e.g., 'Violent content 5').")
             context.user_data['state'] = 'awaiting_report_comment_and_count'
-            
-    elif user_state == 'awaiting_join_link':
-        link = user_message
-        user_id = update.effective_user.id
-        
-        accounts = get_logged_in_accounts(user_id)
-        if not accounts:
-            await update.message.reply_text("❌ No accounts are logged in to join the channel. Please log in first.")
-            context.user_data['state'] = None
-            return
-        
-        join_tasks = []
-        for phone_number, account_user_id in accounts:
-            join_tasks.append(join_channel_for_account(update, context, link, phone_number, account_user_id))
-        
-        await asyncio.gather(*join_tasks)
 
-async def join_channel_for_account(update: Update, context: ContextTypes.DEFAULT_TYPE, link: str, phone_number: str, account_user_id: int):
-    session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
-    session_path = os.path.join(session_folder, phone_number)
-    
-    if phone_number not in session_locks:
-        session_locks[phone_number] = asyncio.Lock()
-    
-    async with session_locks[phone_number]:
-        if not os.path.exists(session_path + '.session'):
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ **{mask_phone_number(phone_number)}:** Session file not found. Skipping.")
-            return
-
-        client = TelegramClient(session_path, API_ID, API_HASH)
-        
-        try:
-            await client.connect()
-            if not await client.is_user_authorized():
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ **{mask_phone_number(phone_number)}:** Account not authorized. Skipping.")
-                return
-
-            if link.startswith('https://t.me/+'):
-                invite_hash = link.split('+')[1]
-                await client(ImportChatInviteRequest(invite_hash))
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ **{mask_phone_number(phone_number)}:** Joined the private channel successfully!")
-            elif link.startswith('https://t.me/'):
-                channel_username = link.split('/')[-1]
-                await client(JoinChannelRequest(channel=channel_username))
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ **{mask_phone_number(phone_number)}:** Joined the public channel successfully!")
-            else:
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ **{mask_phone_number(phone_number)}:** Invalid link format.")
-
-        except UserAlreadyParticipantError:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ **{mask_phone_number(phone_number)}:** Already a member of this channel.")
-        except RPCError as e:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ **{mask_phone_number(phone_number)}:** Failed to join channel. Reason: {e}")
-        except Exception as e:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ **{mask_phone_number(phone_number)}:** An unexpected error occurred. Reason: {e}")
-            logging.error(f"Error joining channel for {phone_number}: {traceback.format_exc()}")
-        finally:
-            if client.is_connected():
-                await client.disconnect()
-
+# --- The function that handles all reporting in the background ---
 async def start_reporting_process(update, context, accounts_to_use, target_link, report_type_text, report_count, report_message, task_id, user_id):
+    
     delay_per_report = 5
     if len(accounts_to_use) == 1:
         delay_per_report = 10
+
     await_tasks = []
     for i in range(report_count):
         for phone_number, account_user_id in accounts_to_use:
             await asyncio.sleep(delay_per_report)
             task = asyncio.create_task(send_single_report(update, context, phone_number, target_link, report_type_text, i + 1, report_count, report_message, task_id, user_id, account_user_id))
             await_tasks.append(task)
+            
     await asyncio.gather(*await_tasks, return_exceptions=True)
+    
     if user_id in user_tasks and task_id in user_tasks[user_id]:
         del user_tasks[user_id][task_id]
+    
     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Reporting task #{task_id} has been completed.")
 
-async def start_email_reporting_process(update, context, email_accounts, target_link, report_type_text, report_count, report_message, task_id, attachment):
-    delay_per_report = 5
-    await_tasks = []
-    for i in range(report_count):
-        for account in email_accounts:
-            await asyncio.sleep(delay_per_report)
-            task = asyncio.create_task(send_single_email_report(update, context, account, target_link, report_type_text, i + 1, report_count, report_message, task_id, attachment))
-            await_tasks.append(task)
-    await asyncio.gather(*await_tasks, return_exceptions=True)
-    if update.effective_user.id in user_tasks and task_id in user_tasks[update.effective_user.id]:
-        del user_tasks[update.effective_user.id][task_id]
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Email reporting task #{task_id} has been completed.")
 
 async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     try:
         task_id = int(context.args[0])
+        
         if user_id in user_tasks and task_id in user_tasks[user_id]:
             main_task = user_tasks[user_id][task_id]
             main_task.cancel()
@@ -707,115 +579,76 @@ async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
             await update.message.reply_text(f"An error occurred while stopping the task: {e}")
 
-async def send_single_email_report(update: Update, context: ContextTypes.DEFAULT_TYPE, account: dict, target_link, report_type_text, current_report_count, total_report_count, report_message, task_id, attachment):
-    sender_email = account['email']
-    sender_password = account['password']
-    receiver_email = "abuse@telegram.org"
-    smtp_server, smtp_port = get_email_server(sender_email)
-    
-    if not smtp_server:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Failed to send report from {sender_email}. Unknown email provider.")
-        return
+# --- Helper Functions ---
 
-    subject = f"Urgent Report: Illegal Activity on Telegram - {report_type_text}"
-    body = f"""
-Dear Telegram Abuse Team,
-
-I am writing to report a serious violation of Telegram's Terms of Service. The channel and/or post linked below is involved in illegal activities.
-
-**Channel/Post Link:**
-{target_link}
-
-**Report Category:**
-{report_type_text}
-
-**Additional Details:**
-{report_message}
-
-I kindly request that you take immediate action to remove this content and ban the channel to prevent further damage.
-
-Thank you for your prompt attention to this matter.
-
-Best regards,
-
-A concerned user
-"""
-
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = sender_email
-        msg['To'] = receiver_email
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
-        if attachment:
-            file = await context.bot.get_file(attachment)
-            photo_data = io.BytesIO()
-            await file.download_to_memory(photo_data)
-            photo_data.seek(0)
-            image = MIMEImage(photo_data.read(), name='screenshot.png')
-            image.add_header('Content-Disposition', 'attachment', filename='screenshot.png')
-            msg.attach(image)
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls()
-            server.login(sender_email, sender_password)
-            server.sendmail(sender_email, receiver_email, msg.as_string())
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Email Report Send {current_report_count}/{total_report_count} task #{task_id}.\n\nfrom {sender_email} sent successfully.")
-    except smtplib.SMTPAuthenticationError as e:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Email report {current_report_count}/{total_report_count} from {sender_email} failed. **Authentication Error.** Please check your password or App Password and try again. Error: {e}")
-    except smtplib.SMTPException as e:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Email report {current_report_count}/{total_report_count} from {sender_email} failed. **SMTP Error.** Please check your internet connection or email provider settings. Error: {e}")
-    except Exception as e:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Email report {current_report_count}/{total_report_count} from {sender_email} failed. **Reason:** {e}")
-        print(traceback.format_exc())
-
-async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number: str, target_link: str, report_type_text: str, current_report_count: int, total_report_count: int, report_message: str, task_id: int, user_id: int, account_user_id: int):
-    """
-    Sends a single report message to a specified target (user or channel/message).
-    """
+async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number, target_link, report_type_text, current_report_count, total_report_count, report_message, task_id, user_id, account_user_id):
     if phone_number not in session_locks:
         session_locks[phone_number] = asyncio.Lock()
-
+    
     async with session_locks[phone_number]:
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
         session_path = os.path.join(session_folder, phone_number)
-
+        
         if not os.path.exists(session_folder):
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session folder not found. Skipping.")
             return
 
+        if not os.path.exists(session_path + '.session'):
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session file not found. Skipping.")
+            return
+
         client = TelegramClient(session_path, API_ID, API_HASH)
-
+        await client.connect()
+        
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Account {mask_phone_number(phone_number)} is not authorized. Skipping reports for task #{task_id}.")
+            return
+        
         try:
-            await client.connect()
-            if not await client.is_user_authorized():
-                await client.disconnect()
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)} is not authorized. Skipping reports for task #{task_id}.")
-                return
-
             match = re.search(r't\.me/([^/]+)/(\d+)', target_link)
+            
             if match:
                 channel_name = match.group(1)
                 message_id = int(match.group(2))
                 entity = await client.get_entity(channel_name)
-                
-                # --- NEW FALLBACK FIX: Using ReportSpamRequest instead of ReportRequest
-                # to bypass the 'invalid option' error for older Telethon versions.
-                # ReportSpamRequest doesn't need a specific reason, but it still reports.
-                
-                result = await client(ReportSpamRequest(
-                    peer=entity
-                ))
 
-                response_message = f"✅ Report Send {current_report_count}/{total_report_count} task #{task_id}.\n\n"
-                response_message += f"from {mask_phone_number(phone_number)} sent successfully (as SPAM)\n\n"
-                response_message += f"Original api response: {str(result)}"
+                # --- NEW FIX: Using the correct ReportReason object based on user selection ---
+                report_reason_obj = None
+                if report_type_text in REPORT_REASONS:
+                    report_reason_obj = REPORT_REASONS[report_type_text]
+                else:
+                    for main_type, subtypes in REPORT_SUBTYPES.items():
+                        if report_type_text in subtypes:
+                            report_reason_obj = subtypes[report_type_text]
+                            break
+                
+                if report_reason_obj is None:
+                    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected: {report_type_text}. Skipping.")
+                    return
+                
+                # ReportReason object must be serialized to bytes for the option field
+                # This is the correct way to pass the option, addressing the "expect" error
+                report_option_bytes = report_reason_obj._bytes()
+
+                result = await client(ReportRequest(
+                    peer=entity, 
+                    id=[message_id], 
+                    option=report_option_bytes, 
+                    message=report_message
+                ))
+                
+                response_message = f"✅ Report {current_report_count}/{total_report_count} from {mask_phone_number(phone_number)} sent successfully for task #{task_id}.\n\n"
+                response_message += f"Original API response: {str(result)}"
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
+                    
             else:
                 entity = await client.get_entity(target_link)
+                
                 result = await client(ReportSpamRequest(peer=entity))
-                response_message = f"✅ Report Send {current_report_count}/{total_report_count} task #{task_id}.\n\n"
-                response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
-                response_message += f"Original api response: {str(result)}"
+                
+                response_message = f"✅ Report {current_report_count}/{total_report_count} from {mask_phone_number(phone_number)} sent successfully for task #{task_id}.\n\n"
+                response_message += f"Original API response: {str(result)}"
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
 
         except asyncio.CancelledError:
@@ -825,36 +658,84 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {current_report_count}/{total_report_count} from {mask_phone_number(phone_number)} failed for task #{task_id}. Reason: {e}")
         except Exception as e:
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {current_report_count}/{total_report_count} from {mask_phone_number(phone_number)} failed for task #{task_id}. Reason: {e}")
-            print(traceback.format_exc())
+            logging.error(f"Error for account {phone_number}: {traceback.format_exc()}")
         finally:
             if client.is_connected():
                 await client.disconnect()
+            
+async def join_channels_in_background(update, context, invite_link, accounts):
+    tasks = [join_channel(update, context, phone, user_id, invite_link) for phone, user_id in accounts]
+    await asyncio.gather(*tasks)
+    await update.message.reply_text("All join requests have been processed.")
+    
+async def join_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number: str, account_user_id: int, invite_link: str):
+    if phone_number not in session_locks:
+        session_locks[phone_number] = asyncio.Lock()
 
+    async with session_locks[phone_number]:
+        session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
+        session_path = os.path.join(session_folder, phone_number)
+
+        if not os.path.exists(session_folder):
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session folder not found. Skipping join request.")
+            return
+
+        client = TelegramClient(session_path, API_ID, API_HASH)
+        await client.connect()
+
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Account {mask_phone_number(phone_number)} is not authorized. Skipping join request.")
+            return
+
+        try:
+            match = re.search(r't\.me/\+([A-Za-z0-9_-]+)', invite_link)
+            if match:
+                invite_hash = match.group(1)
+                await client(ImportChatInviteRequest(hash=invite_hash))
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Join request from account {mask_phone_number(phone_number)} successfully.")
+            else:
+                await client(JoinChannelRequest(channel=invite_link))
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Join request from account {mask_phone_number(phone_number)} successfully.")
+        except UserAlreadyParticipantError:
+             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)} is already a member of this channel.")
+        except Exception as e:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Join request from account {mask_phone_number(phone_number)} failed. Reason: {e}")
+        finally:
+            if client.is_connected():
+                await client.disconnect()
 
 async def get_user_channels(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE, phone_number: str, account_user_id: int):
     chat_id = query.message.chat_id
     if phone_number not in session_locks:
         session_locks[phone_number] = asyncio.Lock()
+
     async with session_locks[phone_number]:
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
         session_path = os.path.join(session_folder, phone_number)
+        
         try:
             if not os.path.exists(session_path + '.session'):
-                await context.bot.send_message(chat_id=chat_id, text=f"❌ The session file for account {mask_phone_number(phone_number)} was not found at `{session_path}.session`. Please re-login this account to fix this.")
+                await context.bot.send_message(chat_id=chat_id, text=f"❌ The session file for account {mask_phone_number(phone_number)} was not found. Please re-login this account to fix this.")
                 return
+
             client = TelegramClient(session_path, API_ID, API_HASH)
             await client.connect()
+
             if not await client.is_user_authorized():
                 await client.disconnect()
                 await context.bot.send_message(chat_id=chat_id, text=f"❌ Account {mask_phone_number(phone_number)} is not authorized. Please re-login.")
                 return
-            dialogs = await client(GetDialogsRequest(offset_date=None, offset_id=0, offset_peer=InputPeerChannel(channel_id=0, access_hash=0), limit=200, hash=0))
-            channels = [d.entity.title for d in dialogs.chats if isinstance(d.entity, Channel)]
+
+            dialogs = await client.get_dialogs()
+            channels = [d.entity.title for d in dialogs if isinstance(d.entity, Channel)]
+            
             if channels:
                 channel_list_text = "\n".join(channels)
                 await context.bot.send_message(chat_id=chat_id, text=f"Channels for account {mask_phone_number(phone_number)}:\n\n{channel_list_text}")
             else:
                 await context.bot.send_message(chat_id=chat_id, text=f"Account {mask_phone_number(phone_number)} has not joined any channels.")
+
         except Exception as e:
             error_details = f"❌ An error occurred while fetching channels for account {mask_phone_number(phone_number)}.\n\n**Original Error:**\n```\n{traceback.format_exc()}\n```"
             await context.bot.send_message(chat_id=chat_id, text=error_details)
@@ -867,51 +748,63 @@ async def create_full_backup(query: Update.callback_query, context: ContextTypes
     chat_id = query.message.chat_id
     try:
         zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.Z_DEFLATED) as zipf:
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
             project_dir = os.getcwd()
             for root, dirs, files in os.walk(project_dir):
                 dirs[:] = [d for d in dirs if d not in ['.venv', '__pycache__', '.git', '.idea']]
+
                 for file in files:
                     if file.endswith(('.session-journal')):
                         continue
+                    
                     file_path = os.path.join(root, file)
                     arcname = os.path.relpath(file_path, project_dir)
                     zipf.write(file_path, arcname=arcname)
+        
         zip_buffer.seek(0)
+        
         backup_filename = f"full_project_backup_{datetime.now().strftime('%Y-%m-%d')}.zip"
         await context.bot.send_document(chat_id=chat_id, document=zip_buffer, filename=backup_filename)
+        
     except Exception as e:
         await context.bot.send_message(chat_id=chat_id, text=f"An error occurred while creating the backup: {e}")
 
 async def list_granted_users(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
     granted_users = load_granted_users()
+    
     if not granted_users:
         await context.bot.send_message(chat_id=chat_id, text="No users have been granted access yet.")
         return
+
     keyboard = []
     for user in granted_users:
         user_id = user['user_id']
         expires_at = datetime.fromisoformat(user['expires_at']).strftime('%Y-%m-%d %H:%M')
         access_type = "All Access" if user.get('all_access') else "Limited"
+        
         row = [
             InlineKeyboardButton(text=f"User: {user_id} ({access_type}, Expires: {expires_at})", callback_data='_'),
             InlineKeyboardButton(text="B", callback_data=f'delete_access_{user_id}'),
             InlineKeyboardButton(text="R", callback_data=f'reset_access_{user_id}')
         ]
         keyboard.append(row)
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     await context.bot.send_message(chat_id=chat_id, text="Granted Users List:", reply_markup=reply_markup)
 
 async def delete_access(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE, user_to_delete: int):
     chat_id = query.message.chat_id
     granted_users = load_granted_users()
+    
     updated_users = [user for user in granted_users if user['user_id'] != user_to_delete]
+    
     if len(updated_users) < len(granted_users):
         save_granted_users(updated_users)
         await context.bot.send_message(chat_id=chat_id, text=f"✅ Access for user {user_to_delete} has been revoked.")
     else:
         await context.bot.send_message(chat_id=chat_id, text=f"User {user_to_delete} not found in granted list.")
+    
     await list_granted_users(query, context)
 
 async def manage_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -919,11 +812,14 @@ async def manage_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     is_user_granted_access = is_granted_user(user_id)
     user_info = get_granted_user_info(user_id)
+    
     all_access = is_owner(user_id) or (is_user_granted_access and user_info.get('all_access'))
     accounts = get_logged_in_accounts(user_id, all_access)
+
     if not accounts:
         await query.edit_message_text("No accounts are currently logged in.")
         return
+
     keyboard = []
     for phone_number, account_user_id in accounts:
         keyboard.append([
@@ -933,37 +829,39 @@ async def manage_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         ])
     keyboard.append([InlineKeyboardButton("Back ↩️", callback_data='start')])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text("Please select an account to manage:", reply_markup=reply_markup)
 
 async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number: str, account_user_id: str):
     query = update.callback_query
     session_file_path = os.path.join(SESSION_FOLDER, account_user_id, f'{phone_number}.session')
+    
     try:
         if os.path.exists(session_file_path):
             os.remove(session_file_path)
             journal_file_path = f"{session_file_path}-journal"
             if os.path.exists(journal_file_path):
                 os.remove(journal_file_path)
+            
             await query.edit_message_text(f"✅ Session file for {mask_phone_number(phone_number)} has been deleted.")
         else:
             await query.edit_message_text(f"❌ Session file for {mask_phone_number(phone_number)} not found.")
     except Exception as e:
         await query.edit_message_text(f"❌ An error occurred while deleting the session file: {e}")
+
     await manage_accounts(update, context)
 
 def main() -> None:
-    """Runs the bot indefinitely until the user presses Ctrl+C"""
     init_files()
     application = Application.builder().token(BOT_TOKEN).build()
-
+    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("stop", stop_command_handler))
     application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO & ~filters.COMMAND, message_handler))
-
-    logging.info("Starting bot polling...")
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    
     application.run_polling(drop_pending_updates=True)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
