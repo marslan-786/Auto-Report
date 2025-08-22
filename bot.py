@@ -10,7 +10,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telethon.tl.functions.messages import ReportRequest, ReportSpamRequest, ImportChatInviteRequest
 from telethon.tl.types import (
-    InputPeerChannel, Channel, ReportResultChooseOption, MessageReportOption,
+    InputPeerChannel, Channel,
     InputReportReasonSpam, InputReportReasonViolence, InputReportReasonChildAbuse,
     InputReportReasonIllegalDrugs, InputReportReasonPornography, InputReportReasonPersonalDetails,
     InputReportReasonCopyright, InputReportReasonFake, InputReportReasonOther
@@ -613,7 +613,6 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 message_id = int(match.group(2))
                 entity = await client.get_entity(channel_name)
 
-                # --- NEW FIX: Using the correct ReportReason object based on user selection ---
                 report_reason_obj = None
                 if report_type_text in REPORT_REASONS:
                     report_reason_obj = REPORT_REASONS[report_type_text]
@@ -627,14 +626,11 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected: {report_type_text}. Skipping.")
                     return
                 
-                # ReportReason object must be serialized to bytes for the option field
-                # This is the correct way to pass the option, addressing the "expect" error
-                report_option_bytes = report_reason_obj._bytes()
-
+                # The crucial fix: use the object directly, not a byte representation
                 result = await client(ReportRequest(
                     peer=entity, 
                     id=[message_id], 
-                    option=report_option_bytes, 
+                    reason=report_reason_obj, 
                     message=report_message
                 ))
                 
