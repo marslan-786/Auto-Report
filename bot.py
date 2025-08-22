@@ -9,6 +9,7 @@ from telethon import TelegramClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telethon.tl.functions.messages import ReportRequest, ReportSpamRequest, ImportChatInviteRequest
+from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import (
     InputPeerChannel, Channel,
     InputReportReasonSpam, InputReportReasonViolence, InputReportReasonChildAbuse,
@@ -34,8 +35,7 @@ BOT_TOKEN = '8324191756:AAF28XJJ9wSO2jZ5iFIqlrdEbjqHFX190Pk'
 SESSION_FOLDER = 'sessions'
 GRANTED_USERS_FILE = 'granted_users.json'
 
-# --- NEW: Mapping human-readable strings to Telegram's InputReportReason types ---
-# This is the correct way to specify report reasons
+# --- MAPPING HUMAN-READABLE STRINGS TO TELEGRAM'S InputReportReason TYPES ---
 REPORT_REASONS = {
     'Scam or spam': InputReportReasonSpam(),
     'Violence': InputReportReasonViolence(),
@@ -50,7 +50,7 @@ REPORT_REASONS = {
     'It’s not illegal, but must be taken down': InputReportReasonOther()
 }
 
-# --- NEW: Mapping for specific report subtypes ---
+# --- MAPPING FOR SPECIFIC REPORT SUBTYPES ---
 REPORT_SUBTYPES = {
     'Scam or spam': {
         'Phishing': InputReportReasonSpam(),
@@ -83,7 +83,7 @@ session_locks = {}
 user_tasks = {}
 task_counter = 0
 
-# --- Utility Functions ---
+# --- UTILITY FUNCTIONS ---
 def init_files():
     if not os.path.exists(SESSION_FOLDER):
         os.makedirs(SESSION_FOLDER)
@@ -143,7 +143,7 @@ def get_logged_in_accounts(user_id, all_access=False):
                     accounts.append((phone_number, user_id))
     return accounts
 
-# --- Bot Handlers (Telegram.ext) ---
+# --- BOT HANDLERS (TELEGRAM.EXT) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     text = ''
@@ -198,6 +198,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif query.data == 'report_start':
         await query.edit_message_text(text="Please send the link of the channel or a post you want to report.")
         context.user_data['state'] = 'awaiting_link'
+    
+    elif query.data == 'join_channel':
+        await query.edit_message_text(text="Please send the public or private channel invite link to join.")
+        context.user_data['state'] = 'awaiting_join_link'
 
     elif query.data.startswith('report_type_'):
         report_type_text = query.data.split('_', 2)[-1]
@@ -343,7 +347,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_state = context.user_data.get('state')
     user_id = update.effective_user.id
     
-    # --- Owner Only States ---
+    # --- OWNER ONLY STATES ---
     if is_owner(user_id):
         if user_state == 'awaiting_grant_info':
             parts = user_message.split()
@@ -449,7 +453,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await update.message.reply_text("All join requests have been sent. They are now processing in the background.")
             context.user_data['state'] = None
 
-    # --- All Users States ---
+    # --- ALL USERS STATES ---
     if user_state == 'awaiting_phone_number':
         phone_number = user_message
         try:
@@ -540,7 +544,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await update.message.reply_text("Please provide a comment and a number separated by a space (e.g., 'Violent content 5').")
             context.user_data['state'] = 'awaiting_report_comment_and_count'
 
-# --- The function that handles all reporting in the background ---
+# --- THE FUNCTION THAT HANDLES ALL REPORTING IN THE BACKGROUND ---
 async def start_reporting_process(update, context, accounts_to_use, target_link, report_type_text, report_count, report_message, task_id, user_id):
     
     delay_per_report = 5
@@ -579,7 +583,7 @@ async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
             await update.message.reply_text(f"An error occurred while stopping the task: {e}")
 
-# --- Helper Functions ---
+# --- HELPER FUNCTIONS ---
 
 async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number, target_link, report_type_text, current_report_count, total_report_count, report_message, task_id, user_id, account_user_id):
     if phone_number not in session_locks:
@@ -633,13 +637,13 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     message=report_message
                 ))
                 
-                response_message = f"✅ رپورٹ نمبر {current_report_count}/{total_report_count} کامیاب\n"
-                response_message += f"اکاؤنٹ: {mask_phone_number(phone_number)}\n"
-                response_message += f"ٹاسک نمبر: {task_id}\n"
-                response_message += f"رپورٹ کی قسم: {report_type_text}\n"
-                response_message += f"رپورٹ کا پیغام: {report_message}\n"
-                response_message += f"ٹارگٹ لنک: {target_link}\n\n"
-                response_message += f"اوریجنل API رسپونس: {str(result)}"
+                response_message = f"✅ Report {current_report_count}/{total_report_count} successful\n"
+                response_message += f"Account: {mask_phone_number(phone_number)}\n"
+                response_message += f"Task ID: {task_id}\n"
+                response_message += f"Report Type: {report_type_text}\n"
+                response_message += f"Report Message: {report_message}\n"
+                response_message += f"Target Link: {target_link}\n\n"
+                response_message += f"Original API Response: {str(result)}"
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
                     
             else:
@@ -647,27 +651,27 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 
                 result = await client(ReportSpamRequest(peer=entity))
                 
-                response_message = f"✅ رپورٹ نمبر {current_report_count}/{total_report_count} کامیاب\n"
-                response_message += f"اکاؤنٹ: {mask_phone_number(phone_number)}\n"
-                response_message += f"ٹاسک نمبر: {task_id}\n"
-                response_message += f"رپورٹ کی قسم: Spam\n"
-                response_message += f"ٹارگٹ لنک: {target_link}\n\n"
-                response_message += f"اوریجنل API رسپونس: {str(result)}"
+                response_message = f"✅ Report {current_report_count}/{total_report_count} successful\n"
+                response_message += f"Account: {mask_phone_number(phone_number)}\n"
+                response_message += f"Task ID: {task_id}\n"
+                response_message += f"Report Type: Spam\n"
+                response_message += f"Target Link: {target_link}\n\n"
+                response_message += f"Original API Response: {str(result)}"
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
 
         except asyncio.CancelledError:
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Reporting task #{task_id} was cancelled for {mask_phone_number(phone_number)}.")
             raise
         except (RPCError, FloodWaitError) as e:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ رپورٹ {current_report_count}/{total_report_count} ناکام\n"
-                                                                            f"اکاؤنٹ: {mask_phone_number(phone_number)}\n"
-                                                                            f"ٹاسک نمبر: {task_id}\n"
-                                                                            f"وجہ: {e}")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {current_report_count}/{total_report_count} failed\n"
+                                                                            f"Account: {mask_phone_number(phone_number)}\n"
+                                                                            f"Task ID: {task_id}\n"
+                                                                            f"Reason: {e}")
         except Exception as e:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ رپورٹ {current_report_count}/{total_report_count} ناکام\n"
-                                                                            f"اکاؤنٹ: {mask_phone_number(phone_number)}\n"
-                                                                            f"ٹاسک نمبر: {task_id}\n"
-                                                                            f"وجہ: {e}")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {current_report_count}/{total_report_count} failed\n"
+                                                                            f"Account: {mask_phone_number(phone_number)}\n"
+                                                                            f"Task ID: {task_id}\n"
+                                                                            f"Reason: {e}")
             logging.error(f"Error for account {phone_number}: {traceback.format_exc()}")
         finally:
             if client.is_connected():
@@ -699,14 +703,17 @@ async def join_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, phone
             return
 
         try:
+            # Check if the link is a private invite link (contains '+') or a public channel link
             match = re.search(r't\.me/\+([A-Za-z0-9_-]+)', invite_link)
             if match:
+                # It's a private invite link
                 invite_hash = match.group(1)
                 await client(ImportChatInviteRequest(hash=invite_hash))
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Join request from account {mask_phone_number(phone_number)} successfully.")
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Join request for the private channel sent from account {mask_phone_number(phone_number)}. The admin can approve your request.")
             else:
+                # It's a public channel link
                 await client(JoinChannelRequest(channel=invite_link))
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Join request from account {mask_phone_number(phone_number)} successfully.")
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Join request for the public channel sent successfully from account {mask_phone_number(phone_number)}.")
         except UserAlreadyParticipantError:
              await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)} is already a member of this channel.")
         except Exception as e:
