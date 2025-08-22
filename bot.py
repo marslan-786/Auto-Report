@@ -626,7 +626,6 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected: {report_type_text}. Skipping.")
                     return
                 
-                # The crucial fix: use the object directly, not a byte representation
                 result = await client(ReportRequest(
                     peer=entity, 
                     id=[message_id], 
@@ -634,8 +633,13 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     message=report_message
                 ))
                 
-                response_message = f"✅ Report {current_report_count}/{total_report_count} from {mask_phone_number(phone_number)} sent successfully for task #{task_id}.\n\n"
-                response_message += f"Original API response: {str(result)}"
+                response_message = f"✅ رپورٹ نمبر {current_report_count}/{total_report_count} کامیاب\n"
+                response_message += f"اکاؤنٹ: {mask_phone_number(phone_number)}\n"
+                response_message += f"ٹاسک نمبر: {task_id}\n"
+                response_message += f"رپورٹ کی قسم: {report_type_text}\n"
+                response_message += f"رپورٹ کا پیغام: {report_message}\n"
+                response_message += f"ٹارگٹ لنک: {target_link}\n\n"
+                response_message += f"اوریجنل API رسپونس: {str(result)}"
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
                     
             else:
@@ -643,17 +647,27 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 
                 result = await client(ReportSpamRequest(peer=entity))
                 
-                response_message = f"✅ Report {current_report_count}/{total_report_count} from {mask_phone_number(phone_number)} sent successfully for task #{task_id}.\n\n"
-                response_message += f"Original API response: {str(result)}"
+                response_message = f"✅ رپورٹ نمبر {current_report_count}/{total_report_count} کامیاب\n"
+                response_message += f"اکاؤنٹ: {mask_phone_number(phone_number)}\n"
+                response_message += f"ٹاسک نمبر: {task_id}\n"
+                response_message += f"رپورٹ کی قسم: Spam\n"
+                response_message += f"ٹارگٹ لنک: {target_link}\n\n"
+                response_message += f"اوریجنل API رسپونس: {str(result)}"
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
 
         except asyncio.CancelledError:
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Reporting task #{task_id} was cancelled for {mask_phone_number(phone_number)}.")
             raise
         except (RPCError, FloodWaitError) as e:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {current_report_count}/{total_report_count} from {mask_phone_number(phone_number)} failed for task #{task_id}. Reason: {e}")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ رپورٹ {current_report_count}/{total_report_count} ناکام\n"
+                                                                            f"اکاؤنٹ: {mask_phone_number(phone_number)}\n"
+                                                                            f"ٹاسک نمبر: {task_id}\n"
+                                                                            f"وجہ: {e}")
         except Exception as e:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {current_report_count}/{total_report_count} from {mask_phone_number(phone_number)} failed for task #{task_id}. Reason: {e}")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ رپورٹ {current_report_count}/{total_report_count} ناکام\n"
+                                                                            f"اکاؤنٹ: {mask_phone_number(phone_number)}\n"
+                                                                            f"ٹاسک نمبر: {task_id}\n"
+                                                                            f"وجہ: {e}")
             logging.error(f"Error for account {phone_number}: {traceback.format_exc()}")
         finally:
             if client.is_connected():
