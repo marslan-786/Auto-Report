@@ -1,2 +1,4 @@
-python-telegram-bot==21.2
-telethon==1.40.0
+python-telegram-bot~=20.0
+telethon==1.28
+aiohttp
+pytz

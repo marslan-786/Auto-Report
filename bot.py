@@ -798,24 +798,16 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 message_id = int(match.group(2))
                 entity = await client.get_entity(channel_name)
                 
-                # Check for the correct report reason object
-                report_reason_obj = REPORT_REASONS.get(report_type_text)
-                if not report_reason_obj:
-                    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected: {report_type_text}. Skipping.")
-                    return
+                # --- NEW FALLBACK FIX: Using ReportSpamRequest instead of ReportRequest
+                # to bypass the 'invalid option' error for older Telethon versions.
+                # ReportSpamRequest doesn't need a specific reason, but it still reports.
                 
-                # --- FIX APPLIED HERE: Using the full bytes representation of the report reason object
-                option_bytes = report_reason_obj._bytes()
-
-                result = await client(ReportRequest(
-                    peer=entity,
-                    id=[message_id],
-                    option=option_bytes,
-                    message=report_message
+                result = await client(ReportSpamRequest(
+                    peer=entity
                 ))
 
                 response_message = f"✅ Report Send {current_report_count}/{total_report_count} task #{task_id}.\n\n"
-                response_message += f"from {mask_phone_number(phone_number)} sent successfully\n\n"
+                response_message += f"from {mask_phone_number(phone_number)} sent successfully (as SPAM)\n\n"
                 response_message += f"Original api response: {str(result)}"
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
             else:
