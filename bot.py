@@ -784,7 +784,12 @@ async def join_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, phone
         if attempts >= max_attempts:
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Failed to join channel after {max_attempts} attempts. No working proxies found.")
 
-async def get_user_channels(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE, phone_number: str, account_user_id: int):
+async def get_user_channels(
+    query: Update.callback_query,
+    context: ContextTypes.DEFAULT_TYPE,
+    phone_number: str,
+    account_user_id: int
+):
     chat_id = query.message.chat_id
     if phone_number not in session_locks:
         session_locks[phone_number] = asyncio.Lock()
@@ -795,7 +800,10 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
 
         try:
             if not os.path.exists(session_path + '.session'):
-                await context.bot.send_message(chat_id=chat_id, text=f"❌ The session file for account {mask_phone_number(phone_number)} was not found. Please re-login this account to fix this.")
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"❌ The session file for account {mask_phone_number(phone_number)} was not found. Please re-login this account to fix this."
+                )
                 return
 
             attempts = 0
@@ -803,7 +811,10 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
             while attempts < max_attempts:
                 proxy_info = get_next_proxy()
                 if not proxy_info:
-                    await context.bot.send_message(chat_id=chat_id, text="❌ No proxies available. Skipping channel fetch.")
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text="❌ No proxies available. Skipping channel fetch."
+                    )
                     return
 
                 client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_info, proxy_port=proxy_info[2])
@@ -811,35 +822,63 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
                     await client.connect()
                     if not await client.is_user_authorized():
                         await client.disconnect()
-                        await context.bot.send_message(chat_id=chat_id, text=f"❌ Account {mask_phone_number(phone_number)} is not authorized. Please re-login.")
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"❌ Account {mask_phone_number(phone_number)} is not authorized. Please re-login."
+                        )
                         return
 
                     dialogs = await client.get_dialogs()
                     channels = [d.entity.title for d in dialogs if isinstance(d.entity, Channel)]
-                    
+
                     if channels:
                         channel_list_text = "\n".join(channels)
-                        await context.bot.send_message(chat_id=chat_id, text=f"Channels for account {mask_phone_number(phone_number)}:\n\n{channel_list_text}")
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"Channels for account {mask_phone_number(phone_number)}:\n\n{channel_list_text}"
+                        )
                     else:
-                        await context.bot.send_message(chat_id=chat_id, text=f"Account {mask_phone_number(phone_number)} has not joined any channels.")
-                    
-                    break # Success, break the loop
-                    
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"Account {mask_phone_number(phone_number)} has not joined any channels."
+                        )
+
+                    break  # Success, break the loop
+
                 except asyncio.TimeoutError:
                     attempts += 1
-                    await context.bot.send_message(chat_id=chat_id, text=f"⚠️ Connection timeout with proxy {proxy_info[1]}:{proxy_info[2]} for channel fetch. Trying a new one... (Attempt {attempts}/{max_attempts})")
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"⚠️ Connection timeout with proxy {proxy_info[1]}:{proxy_info[2]} for channel fetch. Trying a new one... (Attempt {attempts}/{max_attempts})"
+                    )
                 except Exception as e:
                     attempts += 1
-                    error_details = f"❌ An error occurred with proxy {proxy_info[1]}:{proxy_info[2]} while fetching channels for account {mask_phone_number(phone_number)}.\n\n**Original Error:**\n```\n{traceback.format_exc()}\n```"
+                    error_details = (
+                        f"❌ An error occurred with proxy {proxy_info[1]}:{proxy_info[2]} "
+                        f"while fetching channels for account {mask_phone_number(phone_number)}.\n\n"
+                        f"**Original Error:**\n```\n{traceback.format_exc()}\n```"
+                    )
                     await context.bot.send_message(chat_id=chat_id, text=error_details)
                 finally:
                     if 'client' in locals() and client and client.is_connected():
                         await client.disconnect()
 
             if attempts >= max_attempts:
-                await context.bot.send_message(chat_id=chat_id, text=f"❌ Failed to fetch channels after {max_attempts} attempts. No working proxies found.")
-            
-            await context.bot.send_message(chat_id=chat_id, text=f"✅ Channel fetching for account {mask_phone_number(phone_number)} completed.")
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"❌ Failed to fetch channels after {max_attempts} attempts. No working proxies found."
+                )
+
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"✅ Channel fetching for account {mask_phone_number(phone_number)} completed."
+            )
+
+        except Exception as e:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ Unexpected error in get_user_channels: {e}"
+            )
             
 async def create_full_backup(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
