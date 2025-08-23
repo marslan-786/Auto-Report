@@ -27,7 +27,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 
 # --- OWNER DETAILS & BOT CONFIGURATION ---
 OWNER_ID = 8167904992  # Replace with your actual Telegram Chat ID
-OWNER_USERNAME = "only_possible"  # Replace with your actual Telegram Username
+OWNER_USERNAME = "whatsapp_offcial"  # Replace with your actual Telegram Username
 
 API_ID = 94575
 API_HASH = 'a3406de8d171bb422bb6ddf3bbd800e2'
@@ -595,13 +595,7 @@ async def start_reporting_process(update, context, accounts_to_use, target_link,
         for phone_number, account_user_id in accounts_to_use:
             await asyncio.sleep(delay_per_report)
             
-            proxy_info = get_next_proxy()
-            if not proxy_info:
-                logging.error("No more proxies available. Skipping reports.")
-                await context.bot.send_message(chat_id=user_id, text="❌ All proxies have been used. Please add more to the proxies.txt file.")
-                return
-
-            task = asyncio.create_task(send_single_report(update, context, phone_number, target_link, report_type_text, i + 1, report_count, report_message, task_id, user_id, account_user_id, proxy_info))
+            task = asyncio.create_task(send_single_report(update, context, phone_number, target_link, report_type_text, i + 1, report_count, report_message, task_id, user_id, account_user_id))
             await_tasks.append(task)
             
     await asyncio.gather(*await_tasks, return_exceptions=True)
@@ -631,7 +625,7 @@ async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # --- HELPER FUNCTIONS ---
 
-async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number, target_link, report_type_text, current_report_count, total_report_count, report_message, task_id, user_id, account_user_id, proxy_info):
+async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number, target_link, report_type_text, current_report_count, total_report_count, report_message, task_id, user_id, account_user_id):
     if phone_number not in session_locks:
         session_locks[phone_number] = asyncio.Lock()
     
@@ -647,85 +641,95 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session file not found. Skipping.")
             return
 
-        client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_info)
-        await client.connect()
-        
-        if not await client.is_user_authorized():
-            await client.disconnect()
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Account {mask_phone_number(phone_number)} is not authorized. Skipping reports for task #{task_id}.")
-            return
-        
-        try:
-            match = re.search(r't\.me/([^/]+)/(\d+)', target_link)
-            
-            if match:
-                channel_name = match.group(1)
-                message_id = int(match.group(2))
-                entity = await client.get_entity(channel_name)
+        attempts = 0
+        max_attempts = 5  # Maximum number of times to try a new proxy
+        while attempts < max_attempts:
+            proxy_info = get_next_proxy()
+            if not proxy_info:
+                logging.error("No more proxies available. Skipping reports.")
+                await context.bot.send_message(chat_id=user_id, text="❌ All proxies have been used. Please add more to the proxies.txt file.")
+                return
 
-                report_reason_obj = None
-                if report_type_text in REPORT_REASONS:
-                    report_reason_obj = REPORT_REASONS[report_type_text]
-                else:
-                    for main_type, subtypes in REPORT_SUBTYPES.items():
-                        if report_type_text in subtypes:
-                            report_reason_obj = subtypes[report_type_text]
-                            break
-                
-                if report_reason_obj is None:
-                    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected: {report_type_text}. Skipping.")
+            client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_info)
+            try:
+                await client.connect()
+                if not await client.is_user_authorized():
+                    await client.disconnect()
+                    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Account {mask_phone_number(phone_number)} is not authorized. Skipping reports for task #{task_id}.")
                     return
                 
-                result = await client(ReportRequest(
-                    peer=entity, 
-                    id=[message_id], 
-                    reason=report_reason_obj, 
-                    message=report_message
-                ))
+                match = re.search(r't\.me/([^/]+)/(\d+)', target_link)
                 
-                response_message = f"✅ Report {current_report_count}/{total_report_count} successful\n"
-                response_message += f"Account: {mask_phone_number(phone_number)}\n"
-                response_message += f"Proxy: {proxy_info[1]}:{proxy_info[2]}\n"
-                response_message += f"Task ID: {task_id}\n"
-                response_message += f"Report Type: {report_type_text}\n"
-                response_message += f"Report Message: {report_message}\n"
-                response_message += f"Target Link: {target_link}\n\n"
-                # response_message += f"Original API Response: {str(result)}"
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
-                    
-            else:
-                entity = await client.get_entity(target_link)
-                
-                result = await client(ReportSpamRequest(peer=entity))
-                
-                response_message = f"✅ Report {current_report_count}/{total_report_count} successful\n"
-                response_message += f"Account: {mask_phone_number(phone_number)}\n"
-                response_message += f"Proxy: {proxy_info[1]}:{proxy_info[2]}\n"
-                response_message += f"Task ID: {task_id}\n"
-                response_message += f"Report Type: Spam\n"
-                response_message += f"Target Link: {target_link}\n\n"
-                # response_message += f"Original API Response: {str(result)}"
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
+                if match:
+                    channel_name = match.group(1)
+                    message_id = int(match.group(2))
+                    entity = await client.get_entity(channel_name)
 
-        except asyncio.CancelledError:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Reporting task #{task_id} was cancelled for {mask_phone_number(phone_number)}.")
-            raise
-        except (RPCError, FloodWaitError) as e:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {current_report_count}/{total_report_count} failed\n"
-                                                                            f"Account: {mask_phone_number(phone_number)}\n"
-                                                                            f"Proxy: {proxy_info[1]}:{proxy_info[2]}\n"
-                                                                            f"Task ID: {task_id}\n"
-                                                                            f"Reason: {e}")
-        except Exception as e:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {current_report_count}/{total_report_count} failed\n"
-                                                                            f"Account: {mask_phone_number(phone_number)}\n"
-                                                                            f"Proxy: {proxy_info[1]}:{proxy_info[2]}\n"
-                                                                            f"Task ID: {task_id}\n"
-                                                                            f"Reason: {e}")
-            logging.error(f"Error for account {phone_number}: {traceback.format_exc()}")
-        finally:
-            if client.is_connected():
-                await client.disconnect()
+                    report_reason_obj = None
+                    if report_type_text in REPORT_REASONS:
+                        report_reason_obj = REPORT_REASONS[report_type_text]
+                    else:
+                        for main_type, subtypes in REPORT_SUBTYPES.items():
+                            if report_type_text in subtypes:
+                                report_reason_obj = subtypes[report_type_text]
+                                break
+                    
+                    if report_reason_obj is None:
+                        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Invalid report type selected: {report_type_text}. Skipping.")
+                        return
+                    
+                    result = await client(ReportRequest(
+                        peer=entity, 
+                        id=[message_id], 
+                        reason=report_reason_obj, 
+                        message=report_message
+                    ))
+                    
+                    response_message = f"✅ Report {current_report_count}/{total_report_count} successful\n"
+                    response_message += f"Account: {mask_phone_number(phone_number)}\n"
+                    response_message += f"Proxy: {proxy_info[1]}:{proxy_info[2]}\n"
+                    response_message += f"Task ID: {task_id}\n"
+                    response_message += f"Report Type: {report_type_text}\n"
+                    response_message += f"Report Message: {report_message}\n"
+                    response_message += f"Target Link: {target_link}\n\n"
+                    await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
+                        
+                else:
+                    entity = await client.get_entity(target_link)
+                    
+                    result = await client(ReportSpamRequest(peer=entity))
+                    
+                    response_message = f"✅ Report {current_report_count}/{total_report_count} successful\n"
+                    response_message += f"Account: {mask_phone_number(phone_number)}\n"
+                    response_message += f"Proxy: {proxy_info[1]}:{proxy_info[2]}\n"
+                    response_message += f"Task ID: {task_id}\n"
+                    response_message += f"Report Type: Spam\n"
+                    response_message += f"Target Link: {target_link}\n\n"
+                    await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
+                
+                # Report successful, break the loop
+                break 
+
+            except (RPCError, FloodWaitError) as e:
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {current_report_count}/{total_report_count} failed\n"
+                                                                                f"Account: {mask_phone_number(phone_number)}\n"
+                                                                                f"Proxy: {proxy_info[1]}:{proxy_info[2]}\n"
+                                                                                f"Task ID: {task_id}\n"
+                                                                                f"Reason: {e}")
+                break
+            except asyncio.TimeoutError:
+                attempts += 1
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ Connection timeout with proxy {proxy_info[1]}:{proxy_info[2]}. Attempting with a new one... (Attempt {attempts}/{max_attempts})")
+            except Exception as e:
+                attempts += 1
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ An error occurred with proxy {proxy_info[1]}:{proxy_info[2]}. Attempting with a new one... (Attempt {attempts}/{max_attempts})")
+                logging.error(f"Error with proxy {proxy_info[1]}:{proxy_info[2]}: {traceback.format_exc()}")
+            finally:
+                if client.is_connected():
+                    await client.disconnect()
+        
+        if attempts >= max_attempts:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Failed to send report after {max_attempts} attempts. No working proxies found. Skipping this report.")
             
 async def join_channels_in_background(update, context, invite_link, accounts):
     tasks = [join_channel(update, context, phone, user_id, invite_link) for phone, user_id in accounts]
@@ -739,39 +743,57 @@ async def join_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, phone
     async with session_locks[phone_number]:
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
         session_path = os.path.join(session_folder, phone_number)
-        proxy_info = get_next_proxy()
-
+        
         if not os.path.exists(session_folder):
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session folder not found. Skipping join request.")
             return
 
-        client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_info)
-        await client.connect()
+        attempts = 0
+        max_attempts = 5
+        while attempts < max_attempts:
+            proxy_info = get_next_proxy()
+            if not proxy_info:
+                await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ No proxies available. Skipping join request.")
+                return
 
-        if not await client.is_user_authorized():
-            await client.disconnect()
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Account {mask_phone_number(phone_number)} is not authorized. Skipping join request.")
-            return
-
-        try:
-            # Check if the link is a private invite link (contains '+') or a public channel link
-            match = re.search(r't\.me/\+([A-Za-z0-9_-]+)', invite_link)
-            if match:
-                # It's a private invite link
-                invite_hash = match.group(1)
-                await client(ImportChatInviteRequest(hash=invite_hash))
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Join request for the private channel sent from account {mask_phone_number(phone_number)}. The admin can approve your request.")
-            else:
-                # It's a public channel link
-                await client(JoinChannelRequest(channel=invite_link))
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Join request for the public channel sent successfully from account {mask_phone_number(phone_number)}.")
-        except UserAlreadyParticipantError:
-             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)} is already a member of this channel.")
-        except Exception as e:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Join request from account {mask_phone_number(phone_number)} failed. Reason: {e}")
-        finally:
-            if client.is_connected():
-                await client.disconnect()
+            client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_info)
+            try:
+                await client.connect()
+                if not await client.is_user_authorized():
+                    await client.disconnect()
+                    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Account {mask_phone_number(phone_number)} is not authorized. Skipping join request.")
+                    return
+                
+                # Check if the link is a private invite link (contains '+') or a public channel link
+                match = re.search(r't\.me/\+([A-Za-z0-9_-]+)', invite_link)
+                if match:
+                    # It's a private invite link
+                    invite_hash = match.group(1)
+                    await client(ImportChatInviteRequest(hash=invite_hash))
+                    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Join request for the private channel sent from account {mask_phone_number(phone_number)}. The admin can approve your request.")
+                else:
+                    # It's a public channel link
+                    await client(JoinChannelRequest(channel=invite_link))
+                    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Join request for the public channel sent successfully from account {mask_phone_number(phone_number)}.")
+                
+                break # Success, break the loop
+                
+            except UserAlreadyParticipantError:
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)} is already a member of this channel.")
+                break # Don't retry, it's not a proxy issue
+            except asyncio.TimeoutError:
+                attempts += 1
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ Connection timeout with proxy {proxy_info[1]}:{proxy_info[2]} for join request. Trying a new one... (Attempt {attempts}/{max_attempts})")
+            except Exception as e:
+                attempts += 1
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ An error occurred with proxy {proxy_info[1]}:{proxy_info[2]}. Attempting with a new one... (Attempt {attempts}/{max_attempts})")
+                logging.error(f"Error with proxy {proxy_info[1]}:{proxy_info[2]}: {traceback.format_exc()}")
+            finally:
+                if client.is_connected():
+                    await client.disconnect()
+        
+        if attempts >= max_attempts:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Failed to join channel after {max_attempts} attempts. No working proxies found.")
 
 async def get_user_channels(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE, phone_number: str, account_user_id: int):
     chat_id = query.message.chat_id
@@ -781,38 +803,55 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
     async with session_locks[phone_number]:
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
         session_path = os.path.join(session_folder, phone_number)
-        proxy_info = get_next_proxy()
 
         try:
             if not os.path.exists(session_path + '.session'):
                 await context.bot.send_message(chat_id=chat_id, text=f"❌ The session file for account {mask_phone_number(phone_number)} was not found. Please re-login this account to fix this.")
                 return
 
-            client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_info)
-            await client.connect()
+            attempts = 0
+            max_attempts = 5
+            while attempts < max_attempts:
+                proxy_info = get_next_proxy()
+                if not proxy_info:
+                    await context.bot.send_message(chat_id=chat_id, text="❌ No proxies available. Skipping channel fetch.")
+                    return
 
-            if not await client.is_user_authorized():
-                await client.disconnect()
-                await context.bot.send_message(chat_id=chat_id, text=f"❌ Account {mask_phone_number(phone_number)} is not authorized. Please re-login.")
-                return
+                client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_info)
+                try:
+                    await client.connect()
+                    if not await client.is_user_authorized():
+                        await client.disconnect()
+                        await context.bot.send_message(chat_id=chat_id, text=f"❌ Account {mask_phone_number(phone_number)} is not authorized. Please re-login.")
+                        return
 
-            dialogs = await client.get_dialogs()
-            channels = [d.entity.title for d in dialogs if isinstance(d.entity, Channel)]
+                    dialogs = await client.get_dialogs()
+                    channels = [d.entity.title for d in dialogs if isinstance(d.entity, Channel)]
+                    
+                    if channels:
+                        channel_list_text = "\n".join(channels)
+                        await context.bot.send_message(chat_id=chat_id, text=f"Channels for account {mask_phone_number(phone_number)}:\n\n{channel_list_text}")
+                    else:
+                        await context.bot.send_message(chat_id=chat_id, text=f"Account {mask_phone_number(phone_number)} has not joined any channels.")
+                    
+                    break # Success, break the loop
+                    
+                except asyncio.TimeoutError:
+                    attempts += 1
+                    await context.bot.send_message(chat_id=chat_id, text=f"⚠️ Connection timeout with proxy {proxy_info[1]}:{proxy_info[2]} for channel fetch. Trying a new one... (Attempt {attempts}/{max_attempts})")
+                except Exception as e:
+                    attempts += 1
+                    error_details = f"❌ An error occurred with proxy {proxy_info[1]}:{proxy_info[2]} while fetching channels for account {mask_phone_number(phone_number)}.\n\n**Original Error:**\n```\n{traceback.format_exc()}\n```"
+                    await context.bot.send_message(chat_id=chat_id, text=error_details)
+                finally:
+                    if 'client' in locals() and client and client.is_connected():
+                        await client.disconnect()
+
+            if attempts >= max_attempts:
+                await context.bot.send_message(chat_id=chat_id, text=f"❌ Failed to fetch channels after {max_attempts} attempts. No working proxies found.")
             
-            if channels:
-                channel_list_text = "\n".join(channels)
-                await context.bot.send_message(chat_id=chat_id, text=f"Channels for account {mask_phone_number(phone_number)}:\n\n{channel_list_text}")
-            else:
-                await context.bot.send_message(chat_id=chat_id, text=f"Account {mask_phone_number(phone_number)} has not joined any channels.")
-
-        except Exception as e:
-            error_details = f"❌ An error occurred while fetching channels for account {mask_phone_number(phone_number)}.\n\n**Original Error:**\n```\n{traceback.format_exc()}\n```"
-            await context.bot.send_message(chat_id=chat_id, text=error_details)
-        finally:
-            if 'client' in locals() and client and client.is_connected():
-                await client.disconnect()
             await context.bot.send_message(chat_id=chat_id, text=f"✅ Channel fetching for account {mask_phone_number(phone_number)} completed.")
-
+            
 async def create_full_backup(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
     try:
