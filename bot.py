@@ -20,13 +20,14 @@ from telethon.errors import RPCError, FloodWaitError, UserAlreadyParticipantErro
 import traceback
 import random
 import logging
+import itertools
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # --- OWNER DETAILS & BOT CONFIGURATION ---
 OWNER_ID = 8167904992  # Replace with your actual Telegram Chat ID
-OWNER_USERNAME = "whatsapp_offcial"  # Replace with your actual Telegram Username
+OWNER_USERNAME = "only_possible"  # Replace with your actual Telegram Username
 
 API_ID = 94575
 API_HASH = 'a3406de8d171bb422bb6ddf3bbd800e2'
@@ -34,6 +35,7 @@ BOT_TOKEN = '8324191756:AAF28XJJ9wSO2jZ5iFIqlrdEbjqHFX190Pk'
 
 SESSION_FOLDER = 'sessions'
 GRANTED_USERS_FILE = 'granted_users.json'
+PROXIES_FILE = 'proxies.txt'
 
 # --- MAPPING HUMAN-READABLE STRINGS TO TELEGRAM'S InputReportReason TYPES ---
 REPORT_REASONS = {
@@ -82,6 +84,7 @@ REPORT_SUBTYPES = {
 session_locks = {}
 user_tasks = {}
 task_counter = 0
+proxies_iterator = None
 
 # --- UTILITY FUNCTIONS ---
 def init_files():
@@ -90,6 +93,42 @@ def init_files():
     if not os.path.exists(GRANTED_USERS_FILE):
         with open(GRANTED_USERS_FILE, 'w') as f:
             json.dump([], f)
+    if not os.path.exists(PROXIES_FILE):
+        logging.warning("proxies.txt file not found. Automatic reporting will not use proxies.")
+
+def load_proxies():
+    if not os.path.exists(PROXIES_FILE):
+        return []
+    
+    with open(PROXIES_FILE, 'r') as f:
+        proxies = [line.strip().split(':') for line in f if line.strip()]
+    
+    formatted_proxies = []
+    for proxy in proxies:
+        if len(proxy) == 2:
+            try:
+                ip, port = proxy
+                formatted_proxies.append(('socks4', ip, int(port)))
+            except (ValueError, IndexError):
+                logging.error(f"Invalid proxy format in proxies.txt: {':'.join(proxy)}")
+    
+    random.shuffle(formatted_proxies)
+    return formatted_proxies
+
+def get_next_proxy():
+    global proxies_iterator
+    if proxies_iterator is None:
+        proxies_list = load_proxies()
+        if not proxies_list:
+            logging.warning("No valid proxies loaded from proxies.txt.")
+            return None
+        proxies_iterator = itertools.cycle(proxies_list)
+    
+    try:
+        return next(proxies_iterator)
+    except StopIteration:
+        logging.info("End of proxy list, cycling back to the beginning.")
+        return get_next_proxy() # Recursive call to get the first proxy of the new cycle
 
 def load_granted_users():
     if not os.path.exists(GRANTED_USERS_FILE):
@@ -555,7 +594,14 @@ async def start_reporting_process(update, context, accounts_to_use, target_link,
     for i in range(report_count):
         for phone_number, account_user_id in accounts_to_use:
             await asyncio.sleep(delay_per_report)
-            task = asyncio.create_task(send_single_report(update, context, phone_number, target_link, report_type_text, i + 1, report_count, report_message, task_id, user_id, account_user_id))
+            
+            proxy_info = get_next_proxy()
+            if not proxy_info:
+                logging.error("No more proxies available. Skipping reports.")
+                await context.bot.send_message(chat_id=user_id, text="❌ All proxies have been used. Please add more to the proxies.txt file.")
+                return
+
+            task = asyncio.create_task(send_single_report(update, context, phone_number, target_link, report_type_text, i + 1, report_count, report_message, task_id, user_id, account_user_id, proxy_info))
             await_tasks.append(task)
             
     await asyncio.gather(*await_tasks, return_exceptions=True)
@@ -585,7 +631,7 @@ async def stop_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # --- HELPER FUNCTIONS ---
 
-async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number, target_link, report_type_text, current_report_count, total_report_count, report_message, task_id, user_id, account_user_id):
+async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE, phone_number, target_link, report_type_text, current_report_count, total_report_count, report_message, task_id, user_id, account_user_id, proxy_info):
     if phone_number not in session_locks:
         session_locks[phone_number] = asyncio.Lock()
     
@@ -601,7 +647,7 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session file not found. Skipping.")
             return
 
-        client = TelegramClient(session_path, API_ID, API_HASH)
+        client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_info)
         await client.connect()
         
         if not await client.is_user_authorized():
@@ -639,11 +685,12 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 
                 response_message = f"✅ Report {current_report_count}/{total_report_count} successful\n"
                 response_message += f"Account: {mask_phone_number(phone_number)}\n"
+                response_message += f"Proxy: {proxy_info[1]}:{proxy_info[2]}\n"
                 response_message += f"Task ID: {task_id}\n"
                 response_message += f"Report Type: {report_type_text}\n"
                 response_message += f"Report Message: {report_message}\n"
                 response_message += f"Target Link: {target_link}\n\n"
-                response_message += f"Original API Response: {str(result)}"
+                # response_message += f"Original API Response: {str(result)}"
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
                     
             else:
@@ -653,10 +700,11 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 
                 response_message = f"✅ Report {current_report_count}/{total_report_count} successful\n"
                 response_message += f"Account: {mask_phone_number(phone_number)}\n"
+                response_message += f"Proxy: {proxy_info[1]}:{proxy_info[2]}\n"
                 response_message += f"Task ID: {task_id}\n"
                 response_message += f"Report Type: Spam\n"
                 response_message += f"Target Link: {target_link}\n\n"
-                response_message += f"Original API Response: {str(result)}"
+                # response_message += f"Original API Response: {str(result)}"
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=response_message)
 
         except asyncio.CancelledError:
@@ -665,11 +713,13 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
         except (RPCError, FloodWaitError) as e:
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {current_report_count}/{total_report_count} failed\n"
                                                                             f"Account: {mask_phone_number(phone_number)}\n"
+                                                                            f"Proxy: {proxy_info[1]}:{proxy_info[2]}\n"
                                                                             f"Task ID: {task_id}\n"
                                                                             f"Reason: {e}")
         except Exception as e:
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Report {current_report_count}/{total_report_count} failed\n"
                                                                             f"Account: {mask_phone_number(phone_number)}\n"
+                                                                            f"Proxy: {proxy_info[1]}:{proxy_info[2]}\n"
                                                                             f"Task ID: {task_id}\n"
                                                                             f"Reason: {e}")
             logging.error(f"Error for account {phone_number}: {traceback.format_exc()}")
@@ -689,12 +739,13 @@ async def join_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, phone
     async with session_locks[phone_number]:
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
         session_path = os.path.join(session_folder, phone_number)
+        proxy_info = get_next_proxy()
 
         if not os.path.exists(session_folder):
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Account {mask_phone_number(phone_number)}'s session folder not found. Skipping join request.")
             return
 
-        client = TelegramClient(session_path, API_ID, API_HASH)
+        client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_info)
         await client.connect()
 
         if not await client.is_user_authorized():
@@ -730,13 +781,14 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
     async with session_locks[phone_number]:
         session_folder = os.path.join(SESSION_FOLDER, str(account_user_id))
         session_path = os.path.join(session_folder, phone_number)
-        
+        proxy_info = get_next_proxy()
+
         try:
             if not os.path.exists(session_path + '.session'):
                 await context.bot.send_message(chat_id=chat_id, text=f"❌ The session file for account {mask_phone_number(phone_number)} was not found. Please re-login this account to fix this.")
                 return
 
-            client = TelegramClient(session_path, API_ID, API_HASH)
+            client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_info)
             await client.connect()
 
             if not await client.is_user_authorized():
