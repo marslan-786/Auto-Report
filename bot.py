@@ -481,17 +481,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await update.message.reply_text("Invalid duration format. Please provide a duration (e.g., '1h', '2d').")
                 context.user_data['state'] = 'awaiting_reset_info'
 
-        elif user_state == 'awaiting_join_link':
-            invite_link = user_message
-            accounts = get_logged_in_accounts(user_id, all_access=True)
-            if not accounts:
-                await update.message.reply_text("No accounts logged in to join channels.")
-                return
-
-            task = asyncio.create_task(join_channels_in_background(update, context, invite_link, accounts))
-            await update.message.reply_text("All join requests have been sent. They are now processing in the background.")
-            context.user_data['state'] = None
-
     # --- ALL USERS STATES ---
     if user_state == 'awaiting_phone_number':
         phone_number = user_message
@@ -650,7 +639,7 @@ async def send_single_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 await context.bot.send_message(chat_id=user_id, text="❌ All proxies have been used. Please add more to the proxies.txt file.")
                 return
 
-            client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_info)
+            client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_info, proxy_port=proxy_info[2])
             try:
                 await client.connect()
                 if not await client.is_user_authorized():
@@ -756,7 +745,7 @@ async def join_channel(update: Update, context: ContextTypes.DEFAULT_TYPE, phone
                 await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ No proxies available. Skipping join request.")
                 return
 
-            client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_info)
+            client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_info, proxy_port=proxy_info[2])
             try:
                 await client.connect()
                 if not await client.is_user_authorized():
@@ -817,7 +806,7 @@ async def get_user_channels(query: Update.callback_query, context: ContextTypes.
                     await context.bot.send_message(chat_id=chat_id, text="❌ No proxies available. Skipping channel fetch.")
                     return
 
-                client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_info)
+                client = TelegramClient(session_path, API_ID, API_HASH, proxy=proxy_info, proxy_port=proxy_info[2])
                 try:
                     await client.connect()
                     if not await client.is_user_authorized():
